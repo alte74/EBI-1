@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sentient AI — Emotion by Interruption</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@16..72,500;16..72,600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body data-screen="main">
+  <div class="shell">
+    <nav class="menu" aria-label="Screens">
+      <p class="menu-brand">Sentient AI</p>
+      <button type="button" class="on" data-screen="main">Main</button>
+      <button type="button" data-screen="edit">Edit Personality</button>
+    </nav>
+
+    <div class="app">
+      <header class="top">
+        <div>
+          <p class="eyebrow" id="screenEyebrow">Sentient AI · Individual_001</p>
+          <h1 id="screenTitle">Emotion by Interruption</h1>
+        </div>
+        <div class="top-meta">
+          <span id="modelTag" class="pill">model</span>
+          <span id="streamTag" class="pill idle">idle</span>
+          <div id="emotionBadge" class="emotion Neutral">Neutral</div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="chat-col">
+          <div id="log" class="log" aria-live="polite"></div>
+          <form id="chatForm" class="composer">
+            <textarea id="message" rows="1" placeholder="Talk to the bot. Change the environment while it answers."></textarea>
+            <div class="composer-actions">
+              <label class="check">
+                <input type="checkbox" id="applyOnSend" checked />
+                Apply selectors on send
+              </label>
+              <button type="button" id="previewBtn" class="ghost">Preview replies</button>
+              <button type="submit" id="sendBtn">Send</button>
+            </div>
+          </form>
+        </section>
+
+        <aside class="side">
+          <section class="panel env-panel">
+            <div class="panel-head">
+              <h2>Environment selectors</h2>
+              <span id="dirtyTag" class="pill idle">synced</span>
+            </div>
+            <p class="lede" id="screenLede">Draft values. Apply while the bot is mid-sentence to interrupt it.</p>
+
+            <div class="slider">
+              <span>Temperature <b id="val-temperature">0.50</b></span>
+              <input id="temperature" type="range" min="0" max="1" step="0.01" />
+              <div class="threshold-track" data-kind="touch">
+                <i class="ticks" data-kind="touch"></i>
+                <button type="button" class="cut-handle" data-cut="low" aria-label="Cold threshold"></button>
+                <button type="button" class="cut-handle" data-cut="high" aria-label="Hot threshold"></button>
+              </div>
+              <span class="band-emos" data-kind="touch"></span>
+            </div>
+            <div class="slider">
+              <span>Lumens <b id="val-light">0.55</b></span>
+              <input id="light" type="range" min="0" max="1" step="0.01" />
+              <div class="threshold-track" data-kind="vision">
+                <i class="ticks" data-kind="vision"></i>
+                <button type="button" class="cut-handle" data-cut="low" aria-label="Dark threshold"></button>
+                <button type="button" class="cut-handle" data-cut="high" aria-label="Bright threshold"></button>
+              </div>
+              <span class="band-emos" data-kind="vision"></span>
+            </div>
+            <div class="slider">
+              <span>Hearing / volume <b id="val-volume">0.50</b></span>
+              <input id="volume" type="range" min="0" max="1" step="0.01" />
+              <div class="threshold-track" data-kind="hearing">
+                <i class="ticks" data-kind="hearing"></i>
+                <button type="button" class="cut-handle" data-cut="low" aria-label="Quiet threshold"></button>
+                <button type="button" class="cut-handle" data-cut="high" aria-label="Loud threshold"></button>
+              </div>
+              <span class="band-emos" data-kind="hearing"></span>
+            </div>
+            <div class="slider">
+              <span>Humidity <b id="val-humidity">0.45</b></span>
+              <input id="humidity" type="range" min="0" max="1" step="0.01" />
+              <div class="threshold-track" data-kind="humidity">
+                <i class="ticks" data-kind="humidity"></i>
+                <button type="button" class="cut-handle" data-cut="low" aria-label="Dry threshold"></button>
+                <button type="button" class="cut-handle" data-cut="high" aria-label="Wet threshold"></button>
+              </div>
+              <span class="band-emos" data-kind="humidity"></span>
+            </div>
+
+            <div class="field">
+              <span>Smell</span>
+              <div class="seg" id="smell">
+                <div class="seg-item">
+                  <button type="button" data-value="none">None</button>
+                  <span class="emo-slot" data-sense="smell" data-band="none"></span>
+                </div>
+                <div class="seg-item">
+                  <button type="button" data-value="flowers">Flowers</button>
+                  <span class="emo-slot" data-sense="smell" data-band="flowers"></span>
+                </div>
+                <div class="seg-item">
+                  <button type="button" data-value="rotten_eggs">Rotten eggs</button>
+                  <span class="emo-slot" data-sense="smell" data-band="rotten_eggs"></span>
+                </div>
+              </div>
+            </div>
+            <div class="field">
+              <span>Surface touch</span>
+              <div class="seg" id="surface">
+                <div class="seg-item">
+                  <button type="button" data-value="none">None</button>
+                  <span class="emo-slot" data-sense="surface" data-band="none"></span>
+                </div>
+                <div class="seg-item">
+                  <button type="button" data-value="soft">Soft</button>
+                  <span class="emo-slot" data-sense="surface" data-band="soft"></span>
+                </div>
+                <div class="seg-item">
+                  <button type="button" data-value="hard">Hard</button>
+                  <span class="emo-slot" data-sense="surface" data-band="hard"></span>
+                </div>
+                <div class="seg-item">
+                  <button type="button" data-value="cold">Cold</button>
+                  <span class="emo-slot" data-sense="surface" data-band="cold"></span>
+                </div>
+                <div class="seg-item">
+                  <button type="button" data-value="hot">Hot</button>
+                  <span class="emo-slot" data-sense="surface" data-band="hot"></span>
+                </div>
+              </div>
+            </div>
+
+            <div class="row-actions">
+              <button type="button" id="applyBtn">Apply environment</button>
+              <button type="button" id="resetEnvBtn" class="ghost">Reset sensors</button>
+              <button type="button" id="resetChatBtn" class="ghost">Clear chat</button>
+              <button type="button" id="resetMapBtn" class="ghost edit-only">Reset emotion map</button>
+              <button type="button" id="resetThreshBtn" class="ghost edit-only">Reset thresholds</button>
+            </div>
+          </section>
+
+          <section class="panel preview-panel">
+            <div class="panel-head">
+              <h2>Next utterance</h2>
+              <span class="muted">before vs after selectors</span>
+            </div>
+            <div class="preview-grid">
+              <div class="preview-box">
+                <header>Before <small>currently applied</small></header>
+                <textarea id="beforeBox" readonly placeholder="Current environment utterance..."></textarea>
+              </div>
+              <div class="preview-box after">
+                <header>After <small>pending selectors</small></header>
+                <textarea id="afterBox" readonly placeholder="What would fire if you apply..."></textarea>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
