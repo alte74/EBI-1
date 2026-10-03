@@ -17,6 +17,29 @@ let botBubble = null;
 let lastState = null;
 let screen = "main";
 const PRIMARY_EMOTIONS = ["Neutral", "Joy", "Sadness", "Fear", "Anger", "Surprise", "Disgust"];
+const SCREEN_META = {
+  main: {
+    title: "Emotion by Interruption",
+    eyebrow: "Sentient AI · Individual_001",
+    lede: "Draft values. Apply while the bot is mid-sentence to interrupt it.",
+  },
+  edit: {
+    title: "Edit Personality",
+    eyebrow: "Personality programming",
+    lede: "Drag the colored threshold line to resize bands. Emotion dropdowns follow the new ranges.",
+  },
+  simulation: {
+    title: "Simulation",
+    eyebrow: "Canonical happy path · Neutral environment",
+    lede: "Insert a sensor value between two words, then apply EBI-1.",
+  },
+};
+
+const sim = {
+  messages: [],
+  selected: null,
+  after: null,
+};
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -90,6 +113,27 @@ const BAND_EMOTIONS = {
   hearing: { low: "Surprise", normal: "Neutral", loud: "Anger" },
   humidity: { dry: "Sadness", normal: "Neutral", wet: "Disgust" },
 };
+
+const TRIGGER_NAMES = {
+  touch: { cold: "temperature cold", hot: "temperature hot", normal: "temperature normal" },
+  vision: { too_dark: "light too dark", too_bright: "light too bright", normal: "light normal" },
+  hearing: { low: "volume quiet", loud: "volume loud", normal: "volume normal" },
+  humidity: { dry: "air dry", wet: "air wet", normal: "air normal" },
+  smell: { flowers: "smell flowers", rotten_eggs: "smell rotten eggs", none: "smell clear" },
+  surface: {
+    soft: "surface soft",
+    hard: "surface hard",
+    cold: "surface cold",
+    hot: "surface hot",
+    none: "surface none",
+  },
+};
+
+function triggerLabel(trigger) {
+  if (!trigger) return "";
+  const names = TRIGGER_NAMES[trigger.sense] || {};
+  return names[trigger.band] || `${trigger.sense} ${trigger.band}`;
+}
 
 function emotionMap(state) {
   return state?.emotion_map || BAND_EMOTIONS;
@@ -180,7 +224,16 @@ function isDirty() {
 }
 
 function renderState(state) {
+  applyLive(state);
+  $("modelTag").textContent = state.model;
+  setSpeaking(Boolean(state.streaming));
+  paintTicks(state);
+  renderVision(state.vision);
+}
+
+function applyLive(state) {
   lastState = state;
+  const lightUntouched = Number(draft.light) === Number(live.light);
   live = {
     temperature: state.sensors.temperature,
     light: state.sensors.light,
@@ -189,15 +242,110 @@ function renderState(state) {
     smell: state.sensors.smell,
     surface_touch: state.sensors.surface_touch,
   };
+  if (lightUntouched) {
+    draft.light = Number(live.light);
+    $("light").value = draft.light;
+    $("val-light").textContent = draft.light.toFixed(2);
+  }
   const emotion = state.emotion.name;
-  $("emotionBadge").textContent = `${emotion} ${state.emotion.intensity.toFixed(2)}`;
-  $("emotionBadge").className = `emotion ${emotion}`;
-  $("modelTag").textContent = state.model;
-  setSpeaking(Boolean(state.streaming));
-  paintTicks(state);
+  const badge = $("emotionBadge");
+  const trigger = triggerLabel(state.trigger);
+  badge.textContent = `${emotion} ${state.emotion.intensity.toFixed(2)}`;
+  if (trigger) badge.textContent += ` · ${trigger}`;
+  badge.className = `emotion ${emotion}`;
+  const pending = state.pending || [];
+  badge.title = pending.length
+    ? `Waiting to interrupt: ${pending.map((p) => triggerLabel(p)).join(", ")}`
+    : "No pending sensations";
   $("dirtyTag").textContent = isDirty() ? "pending apply" : "synced";
   $("dirtyTag").className = isDirty() ? "pill live" : "pill idle";
 }
+
+const LIGHTING_NAMES = { too_dim: "too dim", normal: "normal", too_bright: "too bright" };
+const VISION_POLL_MS = 2000;
+let visionSeq = null;
+let visionKey = "";
+
+function setFact(id, text, warn) {
+  const el = $(id);
+  el.textContent = text;
+  el.title = text;
+  el.classList.toggle("warn", Boolean(warn));
+}
+
+function renderVision(vision) {
+  if (!vision) return;
+  const report = vision.report;
+  const tag = $("visionTag");
+  $("visionEnabled").checked = vision.enabled;
+  $("visionDrive").checked = vision.drive_light;
+  if (!vision.enabled) {
+    tag.textContent = "paused";
+    tag.className = "pill idle";
+  } else if (report?.error) {
+    tag.textContent = "error";
+    tag.className = "pill live";
+  } else {
+    tag.textContent = `every ${vision.interval}s`;
+    tag.className = "pill idle";
+  }
+  if (!report) return;
+
+  $("visionSummary").textContent = report.error || report.summary || "…";
+  if (report.room_type !== "unknown") {
+    setFact("visionRoom", report.room_type);
+    setFact("visionPeople", report.people.length ? report.people.join("; ") : "Nobody in view");
+    setFact("visionProps", report.room_properties.join(", ") || "—");
+  }
+  if (report.luminance != null) {
+    const verdict = LIGHTING_NAMES[report.lighting] || report.lighting;
+    const band = vision.light_band.replace("_", " ");
+    const notes = report.lighting_notes ? ` — ${report.lighting_notes}` : "";
+    setFact(
+      "visionLight",
+      `${verdict} · measured ${report.luminance.toFixed(2)} (${band})${notes}`,
+      report.lighting === "too_dim" || report.lighting === "too_bright" || vision.light_band !== "normal"
+    );
+    if (report.seq !== visionSeq) {
+      const img = $("visionFrame");
+      img.src = `/api/vision/frame.jpg?seq=${report.seq}`;
+      img.hidden = false;
+    }
+  }
+  visionSeq = report.seq;
+}
+
+async function pollVision() {
+  try {
+    const state = await fetch("/api/state").then((r) => r.json());
+    const v = state.vision;
+    const key = `${v.report?.seq}|${v.enabled}|${v.drive_light}|${v.status}`;
+    if (key !== visionKey) {
+      const fresh = v.report && v.report.seq !== visionSeq;
+      visionKey = key;
+      applyLive(state);
+      renderVision(v);
+      if (fresh) refreshPreview();
+    }
+  } catch {
+    /* server restarting; try again next tick */
+  } finally {
+    setTimeout(pollVision, VISION_POLL_MS);
+  }
+}
+
+async function setVision(body) {
+  try {
+    const state = await postJSON("/api/vision", body);
+    applyLive(state);
+    renderVision(state.vision);
+  } catch (err) {
+    addSystem(String(err.message || err));
+  }
+}
+
+$("visionEnabled").addEventListener("change", (ev) => setVision({ enabled: ev.target.checked }));
+$("visionDrive").addEventListener("change", (ev) => setVision({ drive_light: ev.target.checked }));
 
 function setSpeaking(on) {
   speaking = on;
@@ -367,14 +515,13 @@ function showScreen(name) {
   document.querySelectorAll(".menu [data-screen]").forEach((btn) => {
     btn.classList.toggle("on", btn.dataset.screen === name);
   });
-  $("screenTitle").textContent =
-    name === "edit" ? "Edit Personality" : "Emotion by Interruption";
-  $("screenEyebrow").textContent =
-    name === "edit" ? "Personality programming" : "Sentient AI · Individual_001";
-  $("screenLede").textContent =
-    name === "edit"
-      ? "Drag the colored threshold line to resize bands. Emotion dropdowns follow the new ranges."
-      : "Draft values. Apply while the bot is mid-sentence to interrupt it.";
+  const meta = SCREEN_META[name] || SCREEN_META.main;
+  $("screenTitle").textContent = meta.title;
+  $("screenEyebrow").textContent = meta.eyebrow;
+  $("screenLede").textContent = meta.lede;
+  if (name === "simulation") {
+    renderSimulation();
+  }
   if (lastState) {
     paintTicks(lastState);
     paintChoiceEmotions(lastState);
@@ -477,12 +624,420 @@ document.querySelectorAll(".threshold-track").forEach((track) => {
   track.addEventListener("pointercancel", finish);
 });
 
+const LAYOUT_KEY = "sentient-layout";
+const LAYOUT_DEFAULTS = { menu: 176, chat: 50, env: 66, before: 50, sim: 50 };
+
+function loadLayout() {
+  try {
+    return { ...LAYOUT_DEFAULTS, ...JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}") };
+  } catch {
+    return { ...LAYOUT_DEFAULTS };
+  }
+}
+
+function saveLayout(sizes) {
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(sizes));
+}
+
+function applyLayout(sizes) {
+  const chat = Number(sizes.chat);
+  const env = Number(sizes.env);
+  const before = Number(sizes.before);
+  const simSplit = Number(sizes.sim);
+  const root = document.documentElement.style;
+  root.setProperty("--menu-w", `${sizes.menu}px`);
+  root.setProperty("--chat-track", `${chat}fr`);
+  root.setProperty("--side-track", `${Math.max(1, 100 - chat)}fr`);
+  root.setProperty("--env-track", `${env}fr`);
+  root.setProperty("--preview-track", `${Math.max(1, 100 - env)}fr`);
+  root.setProperty("--before-track", `${before}fr`);
+  root.setProperty("--after-track", `${Math.max(1, 100 - before)}fr`);
+  root.setProperty("--sim-left-track", `${simSplit}fr`);
+  root.setProperty("--sim-right-track", `${Math.max(1, 100 - simSplit)}fr`);
+
+  const shell = document.querySelector(".shell");
+  const layout = document.querySelector(".layout");
+  const side = document.querySelector(".side");
+  const preview = document.querySelector(".preview-grid");
+  const simLayout = document.querySelector(".sim-layout");
+  if (shell) shell.style.gridTemplateColumns = `${sizes.menu}px 8px minmax(0, 1fr)`;
+  if (layout) layout.style.gridTemplateColumns = `minmax(0, ${chat}fr) 8px minmax(0, ${Math.max(1, 100 - chat)}fr)`;
+  if (side) side.style.gridTemplateRows = `minmax(0, ${env}fr) 8px minmax(0, ${Math.max(1, 100 - env)}fr)`;
+  if (preview) preview.style.gridTemplateColumns = `minmax(0, ${before}fr) 8px minmax(0, ${Math.max(1, 100 - before)}fr)`;
+  if (simLayout) {
+    simLayout.style.gridTemplateColumns = `minmax(0, ${simSplit}fr) 8px minmax(0, ${Math.max(1, 100 - simSplit)}fr)`;
+  }
+}
+
+function initSplitters() {
+  const sizes = loadLayout();
+  applyLayout(sizes);
+
+  const specs = {
+    menu: {
+      axis: "x",
+      key: "menu",
+      min: 120,
+      max: 280,
+      parent: () => document.querySelector(".shell"),
+      read: (ev, rect) => ev.clientX - rect.left,
+      write: (px) => {
+        sizes.menu = Math.round(Math.min(specs.menu.max, Math.max(specs.menu.min, px)));
+        applyLayout(sizes);
+      },
+    },
+    chat: {
+      axis: "x",
+      key: "chat",
+      min: 22,
+      max: 78,
+      parent: () => document.querySelector(".layout"),
+      read: (ev, rect) => ((ev.clientX - rect.left) / rect.width) * 100,
+      write: (pct) => {
+        sizes.chat = Math.round(Math.min(specs.chat.max, Math.max(specs.chat.min, pct)));
+        applyLayout(sizes);
+      },
+    },
+    env: {
+      axis: "y",
+      key: "env",
+      min: 22,
+      max: 82,
+      parent: () => document.querySelector(".side"),
+      read: (ev, rect) => ((ev.clientY - rect.top) / rect.height) * 100,
+      write: (pct) => {
+        sizes.env = Math.round(Math.min(specs.env.max, Math.max(specs.env.min, pct)));
+        applyLayout(sizes);
+      },
+    },
+    preview: {
+      axis: "x",
+      key: "before",
+      min: 20,
+      max: 80,
+      parent: () => document.querySelector(".preview-grid"),
+      read: (ev, rect) => ((ev.clientX - rect.left) / rect.width) * 100,
+      write: (pct) => {
+        sizes.before = Math.round(Math.min(specs.preview.max, Math.max(specs.preview.min, pct)));
+        applyLayout(sizes);
+      },
+    },
+    sim: {
+      axis: "x",
+      key: "sim",
+      min: 22,
+      max: 78,
+      parent: () => document.querySelector(".sim-layout"),
+      read: (ev, rect) => ((ev.clientX - rect.left) / rect.width) * 100,
+      write: (pct) => {
+        sizes.sim = Math.round(Math.min(specs.sim.max, Math.max(specs.sim.min, pct)));
+        applyLayout(sizes);
+      },
+    },
+  };
+
+  let drag = null;
+
+  const onMove = (ev) => {
+    if (!drag || ev.pointerId !== drag.pointerId) return;
+    const parent = drag.spec.parent();
+    if (!parent) return;
+    drag.spec.write(drag.spec.read(ev, parent.getBoundingClientRect()));
+  };
+
+  const onUp = (ev) => {
+    if (!drag || ev.pointerId !== drag.pointerId) return;
+    try {
+      drag.handle.releasePointerCapture(ev.pointerId);
+    } catch {
+      /* capture already released */
+    }
+    document.body.classList.remove("resizing-col", "resizing-row");
+    saveLayout(sizes);
+    drag = null;
+  };
+
+  window.addEventListener("pointermove", onMove, true);
+  window.addEventListener("pointerup", onUp, true);
+  window.addEventListener("pointercancel", onUp, true);
+
+  document.querySelectorAll("[data-split]").forEach((handle) => {
+    const spec = specs[handle.dataset.split];
+    if (!spec) return;
+    handle.addEventListener("pointerdown", (ev) => {
+      if (ev.button !== 0) return;
+      const parent = spec.parent();
+      if (!parent) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      drag = { spec, handle, pointerId: ev.pointerId };
+      document.body.classList.add(spec.axis === "x" ? "resizing-col" : "resizing-row");
+      try {
+        handle.setPointerCapture(ev.pointerId);
+      } catch {
+        /* Opera/older Chromium: window listeners still track the drag */
+      }
+    });
+    handle.addEventListener("dblclick", (ev) => {
+      ev.preventDefault();
+      sizes[spec.key] = LAYOUT_DEFAULTS[spec.key];
+      applyLayout(sizes);
+      saveLayout(sizes);
+    });
+  });
+}
+
+function tokenizeText(text) {
+  return String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function cloneSimMessages(messages) {
+  return (messages || []).map((msg) => ({
+    role: msg.role,
+    text: msg.text,
+    words: tokenizeText(msg.text),
+    tag: msg.tag ? { ...msg.tag } : null,
+  }));
+}
+
+function simTagDisplay(tag) {
+  if (!tag) return "";
+  return `[${tag.sensor} = ${tag.value}]`;
+}
+
+function renderPlainLog(el, messages) {
+  el.innerHTML = "";
+  (messages || []).forEach((msg) => {
+    const div = document.createElement("div");
+    div.className = `msg ${msg.role}`;
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = msg.role;
+    const body = document.createElement("span");
+    body.textContent = msg.text;
+    div.appendChild(who);
+    div.appendChild(body);
+    el.appendChild(div);
+  });
+}
+
+function renderSimPlay() {
+  const el = $("simPlay");
+  el.innerHTML = "";
+  sim.messages.forEach((msg, msgIndex) => {
+    const div = document.createElement("div");
+    div.className = `msg ${msg.role}`;
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = msg.role;
+    const body = document.createElement("span");
+    const words = msg.words || tokenizeText(msg.text);
+    words.forEach((word, wordIndex) => {
+      if (wordIndex > 0) {
+        const gapIndex = wordIndex - 1;
+        const gap = document.createElement("button");
+        gap.type = "button";
+        gap.className = "sim-gap";
+        gap.dataset.msg = String(msgIndex);
+        gap.dataset.gap = String(gapIndex);
+        gap.title = msg.role === "bot" ? `space #${gapIndex + 1}` : "EBI-1 only fires on bot lines";
+        const selected = sim.selected && sim.selected.msgIndex === msgIndex && sim.selected.gap === gapIndex;
+        const tagged = msg.tag && msg.tag.gap === gapIndex;
+        if (tagged) {
+          gap.classList.add("has-tag");
+          gap.textContent = ` ${simTagDisplay(msg.tag)} `;
+        } else {
+          gap.textContent = " ";
+        }
+        if (selected) gap.classList.add("selected");
+        if (msg.role === "bot") {
+          gap.addEventListener("click", () => {
+            if (
+              msg.tag &&
+              msg.tag.gap === gapIndex &&
+              sim.selected &&
+              sim.selected.msgIndex === msgIndex &&
+              sim.selected.gap === gapIndex
+            ) {
+              msg.tag = null;
+              sim.selected = null;
+              sim.after = null;
+              renderSimulation();
+              return;
+            }
+            insertSimTag(msgIndex, gapIndex);
+          });
+        } else {
+          gap.disabled = true;
+        }
+        body.appendChild(gap);
+      }
+      const token = document.createElement("span");
+      token.className = "sim-word";
+      token.textContent = word;
+      body.appendChild(token);
+    });
+    div.appendChild(who);
+    div.appendChild(body);
+    el.appendChild(div);
+  });
+}
+
+function renderSimAfter(bundle) {
+  const panel = $("simAfter");
+  const log = $("simAfterLog");
+  const meta = $("simAfterMeta");
+  if (!bundle) {
+    panel.hidden = true;
+    log.innerHTML = "";
+    meta.textContent = "";
+    return;
+  }
+  panel.hidden = false;
+  log.innerHTML = "";
+  const hits = [];
+  (bundle.applied || []).forEach((msg) => {
+    const div = document.createElement("div");
+    div.className = `msg ${msg.role}`;
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = msg.role;
+    const body = document.createElement("span");
+    body.textContent = msg.text;
+    div.appendChild(who);
+    div.appendChild(body);
+    if (msg.eliminated) {
+      const note = document.createElement("span");
+      note.className = "sim-note";
+      note.textContent = `Eliminated: "${msg.eliminated}"`;
+      div.appendChild(note);
+    }
+    if (msg.interrupt) {
+      const cut = document.createElement("span");
+      cut.className = "sim-cut";
+      const spaceLabel = msg.cut_space == null ? "—" : `#${msg.cut_space}`;
+      const label = triggerLabel(msg.interrupt);
+      cut.textContent = `Cut at remainder space ${spaceLabel} · ${label} · ${msg.interrupt.emotion}`;
+      div.appendChild(cut);
+      hits.push(`${label} → ${msg.interrupt.emotion}`);
+    }
+    log.appendChild(div);
+  });
+  meta.textContent = hits.length ? hits.join(" · ") : "no interruption";
+}
+
+function renderSimulation() {
+  renderPlainLog($("simCanonical"), sim.messages.map((msg) => ({ role: msg.role, text: msg.text })));
+  renderSimPlay();
+  renderSimAfter(sim.after);
+}
+
+function currentSimTag() {
+  return {
+    sensor: $("simSensor").value,
+    value: $("simValue").value.trim(),
+  };
+}
+
+function insertSimTag(msgIndex, gap) {
+  const { sensor, value } = currentSimTag();
+  if (!value) return;
+  sim.messages.forEach((msg, index) => {
+    if (index !== msgIndex) return;
+    msg.tag = { gap, sensor, value };
+  });
+  sim.selected = { msgIndex, gap };
+  sim.after = null;
+  renderSimulation();
+}
+
+function randomBotGap() {
+  const options = [];
+  sim.messages.forEach((msg, msgIndex) => {
+    if (msg.role !== "bot") return;
+    const words = msg.words || tokenizeText(msg.text);
+    for (let gap = 0; gap < words.length - 1; gap += 1) {
+      options.push({ msgIndex, gap });
+    }
+  });
+  if (!options.length) return null;
+  return options[Math.floor(Math.random() * options.length)];
+}
+
+async function loadCanonical() {
+  const data = await fetch("/api/simulation/canonical").then((r) => r.json());
+  sim.messages = cloneSimMessages(data.messages);
+  sim.selected = null;
+  sim.after = null;
+  renderSimulation();
+}
+
+function initSimulation() {
+  $("simInsertBtn").addEventListener("click", () => {
+    if (!sim.selected) return;
+    insertSimTag(sim.selected.msgIndex, sim.selected.gap);
+  });
+  $("simRandomBtn").addEventListener("click", () => {
+    const picked = randomBotGap();
+    if (!picked) return;
+    insertSimTag(picked.msgIndex, picked.gap);
+  });
+  $("simResetBtn").addEventListener("click", () => {
+    loadCanonical();
+  });
+  $("simApplyBtn").addEventListener("click", async () => {
+    const tagged = sim.messages.some((msg) => msg.role === "bot" && msg.tag);
+    if (!tagged) {
+      const picked = randomBotGap();
+      if (picked) insertSimTag(picked.msgIndex, picked.gap);
+    }
+    $("simApplyBtn").disabled = true;
+    $("simAfter").hidden = false;
+    $("simAfterMeta").textContent = "applying EBI-1…";
+    $("simAfterLog").innerHTML = "";
+    try {
+      const bundle = await postJSON("/api/simulation/apply", {
+        messages: sim.messages.map((msg) => ({
+          role: msg.role,
+          text: msg.text,
+          tag: msg.tag,
+        })),
+      });
+      sim.after = bundle;
+      renderSimAfter(bundle);
+    } catch (err) {
+      $("simAfterMeta").textContent = String(err.message || err);
+    } finally {
+      $("simApplyBtn").disabled = false;
+    }
+  });
+  $("simSensor").addEventListener("change", () => {
+    const hints = {
+      temp: "011",
+      light: "090",
+      volume: "092",
+      humidity: "088",
+      smell: "rotten_eggs",
+      surface: "cold",
+    };
+    const next = hints[$("simSensor").value];
+    if (next && !$("simValue").value) $("simValue").value = next;
+  });
+  loadCanonical();
+}
+
 async function boot() {
+  initSplitters();
   const state = await fetch("/api/state").then((r) => r.json());
   renderState(state);
   writeSlidersFrom(state.draft || state.sensors);
   connect();
   refreshPreview();
+  initSimulation();
+  pollVision();
 }
 
 boot();

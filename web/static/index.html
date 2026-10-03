@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@16..72,500;16..72,600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=6" />
 </head>
 <body data-screen="main">
   <div class="shell">
@@ -15,7 +15,9 @@
       <p class="menu-brand">Sentient AI</p>
       <button type="button" class="on" data-screen="main">Main</button>
       <button type="button" data-screen="edit">Edit Personality</button>
+      <button type="button" data-screen="simulation">Simulation</button>
     </nav>
+    <div class="split-v" data-split="menu" title="Drag to resize menu · double-click to reset"></div>
 
     <div class="app">
       <header class="top">
@@ -32,6 +34,26 @@
 
       <main class="layout">
         <section class="chat-col">
+          <section class="vision-card" aria-label="Vision Agent">
+            <img id="visionFrame" class="vision-frame" alt="Latest camera snapshot" hidden />
+            <div class="vision-body">
+              <div class="panel-head">
+                <h2>Vision Agent</h2>
+                <span id="visionTag" class="pill idle">starting</span>
+              </div>
+              <p id="visionSummary" class="vision-summary">Waiting for the first snapshot…</p>
+              <dl class="vision-facts">
+                <dt>Room</dt><dd id="visionRoom">—</dd>
+                <dt>People</dt><dd id="visionPeople">—</dd>
+                <dt>Properties</dt><dd id="visionProps">—</dd>
+                <dt>Light</dt><dd id="visionLight">—</dd>
+              </dl>
+              <div class="vision-actions">
+                <label class="check"><input type="checkbox" id="visionEnabled" checked /> Camera on</label>
+                <label class="check"><input type="checkbox" id="visionDrive" checked /> Camera drives Lumens</label>
+              </div>
+            </div>
+          </section>
           <div id="log" class="log" aria-live="polite"></div>
           <form id="chatForm" class="composer">
             <textarea id="message" rows="1" placeholder="Talk to the bot. Change the environment while it answers."></textarea>
@@ -45,7 +67,7 @@
             </div>
           </form>
         </section>
-
+        <div class="split-v" data-split="chat" title="Drag to resize chat · double-click to reset"></div>
         <aside class="side">
           <section class="panel env-panel">
             <div class="panel-head">
@@ -146,7 +168,7 @@
               <button type="button" id="resetThreshBtn" class="ghost edit-only">Reset thresholds</button>
             </div>
           </section>
-
+          <div class="split-h" data-split="env" title="Drag to resize environment / next utterance · double-click to reset"></div>
           <section class="panel preview-panel">
             <div class="panel-head">
               <h2>Next utterance</h2>
@@ -157,6 +179,7 @@
                 <header>Before <small>currently applied</small></header>
                 <textarea id="beforeBox" readonly placeholder="Current environment utterance..."></textarea>
               </div>
+              <div class="split-v" data-split="preview" title="Drag to resize before / after · double-click to reset"></div>
               <div class="preview-box after">
                 <header>After <small>pending selectors</small></header>
                 <textarea id="afterBox" readonly placeholder="What would fire if you apply..."></textarea>
@@ -165,8 +188,67 @@
           </section>
         </aside>
       </main>
+
+      <main class="sim-layout">
+        <section class="sim-col">
+          <div class="panel-head">
+            <h2>Canonical conversation</h2>
+            <span class="muted">happy path · all Neutral</span>
+          </div>
+          <p class="lede">Original Neutral transcript. Environment stays at comfortable defaults.</p>
+          <div id="simCanonical" class="log"></div>
+        </section>
+        <div class="split-v" data-split="sim" title="Drag to resize canonical / simulation · double-click to reset"></div>
+        <section class="sim-col sim-play">
+          <div class="panel-head">
+            <h2>Simulation</h2>
+            <span class="muted">click a space between bot words</span>
+          </div>
+          <p class="lede">Insert <code>[temp = 011]</code> (or another sensor) in a gap. Apply EBI-1 to cut the line from a later random space and rewrite what remains.</p>
+          <div class="sim-toolbar">
+            <label>
+              Sensor
+              <select id="simSensor">
+                <option value="temp" selected>temp</option>
+                <option value="light">light</option>
+                <option value="volume">volume</option>
+                <option value="humidity">humidity</option>
+                <option value="smell">smell</option>
+                <option value="surface">surface</option>
+              </select>
+            </label>
+            <label>
+              Value
+              <input id="simValue" type="text" value="011" list="simValueHints" />
+              <datalist id="simValueHints">
+                <option value="011"></option>
+                <option value="050"></option>
+                <option value="092"></option>
+                <option value="cold"></option>
+                <option value="hot"></option>
+                <option value="flowers"></option>
+                <option value="rotten_eggs"></option>
+                <option value="soft"></option>
+                <option value="hard"></option>
+              </datalist>
+            </label>
+            <button type="button" id="simInsertBtn">Insert at selected gap</button>
+            <button type="button" id="simRandomBtn" class="ghost">Random gap</button>
+            <button type="button" id="simApplyBtn">Apply EBI-1</button>
+            <button type="button" id="simResetBtn" class="ghost">Reset</button>
+          </div>
+          <div id="simPlay" class="log"></div>
+          <section id="simAfter" class="sim-after" hidden>
+            <div class="panel-head">
+              <h2>After applying EBI-1</h2>
+              <span id="simAfterMeta" class="muted"></span>
+            </div>
+            <div id="simAfterLog" class="log"></div>
+          </section>
+        </section>
+      </main>
     </div>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>

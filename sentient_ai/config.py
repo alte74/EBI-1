@@ -22,3 +22,19 @@ def anthropic_api_key() -> str:
 
 def anthropic_model() -> str:
     return os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5").strip()
+
+
+def vision_model() -> str:
+    return os.getenv("VISION_MODEL", "").strip() or anthropic_model()
+
+
+def vision_enabled() -> bool:
+    return os.getenv("VISION_AGENT", "on").strip().lower() not in {"0", "off", "false", "no"}
+
+
+def vision_camera_index() -> int:
+    return int(os.getenv("VISION_CAMERA_INDEX", "0"))
+
+
+def vision_interval_seconds() -> float:
+    return max(2.0, float(os.getenv("VISION_INTERVAL_SECONDS", "10")))

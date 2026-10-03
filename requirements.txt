@@ -2,3 +2,5 @@ fastapi
 uvicorn
 anthropic
 python-dotenv
+opencv-python
+numpy

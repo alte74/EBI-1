@@ -20,6 +20,7 @@ COMMENTS = {
         "whew — it just jumped. that's uncomfortable.",
     ],
     ("touch", "cold"): [
+        "did it get cold all of the sudden or is it just me?",
         "oh. it got cold all of a sudden.",
         "did a window just open? I just got a chill.",
         "okay that's... brisk. not a fan.",

@@ -23,9 +23,13 @@ from sentient_ai.interruption import (
 )
 from sentient_ai.personality import Personality
 from sentient_ai.sensors import SensoryState, snapshot_labels
+from sentient_ai.simulation import canonical_payload, simulate_conversation
+from sentient_ai.vision_agent import VisionAgent, VisionReport
 
 
 class BotSession:
+    """The Cognitive Agent: converses, feels, and listens to the Vision Agent."""
+
     def __init__(self) -> None:
         self.personality = Personality()
         self.engine = InterruptionEngine(
@@ -41,6 +45,40 @@ class BotSession:
         self.streaming = False
         self.force_poll = threading.Event()
         self.stop_stream = threading.Event()
+        self.vision_drives_light = True
+        self.last_scene: dict | None = None
+        self.vision = VisionAgent(self.client, self.receive_vision)
+
+    def receive_vision(self, report: VisionReport) -> None:
+        """Called from the Vision Agent thread on every snapshot."""
+        with self.lock:
+            if report.room_type != "unknown":
+                self.last_scene = report.as_dict()
+            if report.luminance is None or not self.vision_drives_light:
+                return
+            if self.draft.light == self.engine.sensors.light:
+                self.draft.set_continuous("light", report.luminance)
+            self.engine.sensors.set_continuous("light", report.luminance)
+            crossed = self.engine.labels()["vision"] != self.engine.last_labels.get("vision")
+            if crossed and self.streaming:
+                self.force_poll.set()
+
+    def vision_state(self) -> dict:
+        state = self.vision.snapshot()
+        state["drive_light"] = self.vision_drives_light
+        state["light_band"] = self.engine.labels()["vision"]
+        return state
+
+    def set_vision(self, enabled: bool | None = None, drive_light: bool | None = None) -> dict:
+        if enabled is not None:
+            self.vision.set_enabled(enabled)
+        if drive_light is not None:
+            with self.lock:
+                self.vision_drives_light = bool(drive_light)
+        return self.public_state()
+
+    def _scene(self) -> dict | None:
+        return self.last_scene if self.vision.enabled else None
 
     def public_state(self) -> dict:
         snap = self.engine.snapshot()
@@ -52,6 +90,7 @@ class BotSession:
         snap["emotion_map"] = self.personality.emotion_map
         snap["thresholds"] = self.personality.thresholds
         snap["primary_emotions"] = list(PRIMARY_EMOTIONS)
+        snap["vision"] = self.vision_state()
         return snap
 
     def set_draft(self, data: dict) -> dict:
@@ -86,6 +125,7 @@ class BotSession:
             self.engine.sensors = SensoryState()
             self.engine.last_labels = self.engine.labels()
             self.engine.emotion.set("Neutral", 0.30)
+            self.engine.last_event = None
             self.draft = self.engine.sensors.copy()
         return self.public_state()
 
@@ -173,7 +213,9 @@ class BotSession:
 
         before_engine = self._clone_engine(self.engine.sensors.copy())
         bundle["before"]["reply"] = self.client.complete_reply(
-            build_system_prompt(self.personality, before_engine.emotion, before_engine, self.kb),
+            build_system_prompt(
+                self.personality, before_engine.emotion, before_engine, self.kb, self._scene()
+            ),
             hist,
         )
 
@@ -197,7 +239,7 @@ class BotSession:
             ]
             continuation = self.client.complete_reply(
                 build_system_prompt(
-                    self.personality, after_engine.emotion, after_engine, self.kb
+                    self.personality, after_engine.emotion, after_engine, self.kb, self._scene()
                 ),
                 after_hist,
             )
@@ -212,7 +254,7 @@ class BotSession:
         else:
             bundle["after"]["reply"] = self.client.complete_reply(
                 build_system_prompt(
-                    self.personality, after_engine.emotion, after_engine, self.kb
+                    self.personality, after_engine.emotion, after_engine, self.kb, self._scene()
                 ),
                 hist,
             )
@@ -232,7 +274,7 @@ class BotSession:
                 self.stop_stream.clear()
                 self.history.append({"role": "user", "content": text})
                 system = build_system_prompt(
-                    self.personality, self.engine.emotion, self.engine, self.kb
+                    self.personality, self.engine.emotion, self.engine, self.kb, self._scene()
                 )
                 history = list(self.history)
         if busy:
@@ -336,7 +378,7 @@ class BotSession:
                     }
                 )
                 resume_system = build_system_prompt(
-                    self.personality, self.engine.emotion, self.engine, self.kb
+                    self.personality, self.engine.emotion, self.engine, self.kb, self._scene()
                 )
                 resume_history = list(self.history)
             resume_q: queue.Queue = queue.Queue()
@@ -384,6 +426,18 @@ class BotSession:
             self.streaming = False
         yield {"type": "state", "state": self.public_state()}
         yield {"type": "done"}
+
+    def simulation_canonical(self) -> dict:
+        return canonical_payload()
+
+    def apply_simulation(self, messages: list[dict]) -> dict:
+        if not messages:
+            raise ValueError("Simulation needs a conversation to apply.")
+        return simulate_conversation(
+            messages,
+            personality=self.personality,
+            client=self.client,
+        )
 
     def _clone_engine(self, sensors: SensoryState) -> InterruptionEngine:
         return InterruptionEngine(

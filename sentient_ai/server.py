@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -14,7 +15,16 @@ from sentient_ai.session import BotSession
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 SESSION = BotSession()
-app = FastAPI(title="Sentient AI")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    SESSION.vision.start()
+    yield
+    SESSION.vision.stop()
+
+
+app = FastAPI(title="Sentient AI", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
@@ -45,6 +55,27 @@ class ThresholdPayload(BaseModel):
     high: float
 
 
+class SimTagPayload(BaseModel):
+    gap: int
+    sensor: str
+    value: str
+
+
+class SimMessagePayload(BaseModel):
+    role: str
+    text: str
+    tag: SimTagPayload | None = None
+
+
+class SimApplyPayload(BaseModel):
+    messages: list[SimMessagePayload]
+
+
+class VisionPayload(BaseModel):
+    enabled: bool | None = None
+    drive_light: bool | None = None
+
+
 def _sensor_dict(payload: SensorPayload | None) -> dict | None:
     if payload is None:
         return None
@@ -54,7 +85,10 @@ def _sensor_dict(payload: SensorPayload | None) -> dict | None:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
+    return FileResponse(
+        WEB_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/state")
@@ -119,6 +153,34 @@ def set_threshold(payload: ThresholdPayload) -> dict:
 @app.post("/api/thresholds/reset")
 def reset_thresholds() -> dict:
     return SESSION.reset_thresholds()
+
+
+@app.get("/api/simulation/canonical")
+def simulation_canonical() -> dict:
+    return SESSION.simulation_canonical()
+
+
+@app.post("/api/simulation/apply")
+def simulation_apply(payload: SimApplyPayload) -> dict:
+    try:
+        return SESSION.apply_simulation(
+            [item.model_dump() for item in payload.messages]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/vision")
+def vision_settings(payload: VisionPayload) -> dict:
+    return SESSION.set_vision(payload.enabled, payload.drive_light)
+
+
+@app.get("/api/vision/frame.jpg")
+def vision_frame() -> Response:
+    jpeg = SESSION.vision.frame()
+    if jpeg is None:
+        raise HTTPException(status_code=404, detail="No camera frame yet.")
+    return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.websocket("/ws/chat")
