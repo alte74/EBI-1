@@ -54,7 +54,8 @@ class MemoryStore:
         self.images = root / "images"
         self.index = root / "memories.json"
         self.lock = threading.Lock()
-        self.version = time.time_ns()
+        # Milliseconds, not ns: the browser parses JSON numbers as doubles (exact only below 2**53).
+        self.version = int(time.time() * 1000)
         self.items: list[dict] = self._load()
 
     def _load(self) -> list[dict]:

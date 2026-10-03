@@ -15,6 +15,7 @@ let speaking = false;
 let debounceTimer = 0;
 let botBubble = null;
 let lastState = null;
+let cameraLumensSeq = null;
 let screen = "main";
 const PRIMARY_EMOTIONS = ["Neutral", "Joy", "Sadness", "Fear", "Anger", "Surprise", "Disgust"];
 const SCREEN_META = {
@@ -238,7 +239,6 @@ function renderState(state) {
 
 function applyLive(state) {
   lastState = state;
-  const lightUntouched = Number(draft.light) === Number(live.light);
   live = {
     temperature: state.sensors.temperature,
     light: state.sensors.light,
@@ -247,7 +247,9 @@ function applyLive(state) {
     smell: state.sensors.smell,
     surface_touch: state.sensors.surface_touch,
   };
-  if (lightUntouched) {
+  const lumensSeq = state.vision?.lumens_seq;
+  if (lumensSeq != null && lumensSeq !== cameraLumensSeq) {
+    cameraLumensSeq = lumensSeq;
     draft.light = Number(live.light);
     $("light").value = draft.light;
     $("val-light").textContent = draft.light.toFixed(2);
@@ -310,9 +312,10 @@ function renderVision(vision) {
     const verdict = LIGHTING_NAMES[report.lighting] || report.lighting;
     const band = vision.light_band.replace("_", " ");
     const notes = report.lighting_notes ? ` — ${report.lighting_notes}` : "";
+    const lumens = vision.drive_light && vision.lumens != null ? ` → Lumens ${vision.lumens.toFixed(2)}` : "";
     setFact(
       "visionLight",
-      `${verdict} · measured ${report.luminance.toFixed(2)} (${band})${notes}`,
+      `${verdict} · measured ${report.luminance.toFixed(2)}${lumens} (${band})${notes}`,
       report.lighting === "too_dim" || report.lighting === "too_bright" || vision.light_band !== "normal"
     );
     if (report.seq !== visionSeq) {

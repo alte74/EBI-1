@@ -48,6 +48,26 @@ Return exactly this JSON object and nothing else:
 Use an empty list for people if nobody is visible. Never guess anyone's name or identity."""
 
 
+LUMENS_MARGIN = 0.05
+
+
+def calibrated_lumens(luminance: float, lighting: str, bands) -> float:
+    """Measured brightness, moved into the band the vision model saw when the two disagree.
+
+    Webcam auto-exposure pulls mean brightness toward mid-grey, so the model's
+    too_dim / normal / too_bright verdict decides the band; the measurement
+    only positions the value inside it.
+    """
+    dark, normal, bright = bands
+    if lighting == "too_dim":
+        value = min(luminance, dark.high - LUMENS_MARGIN)
+    elif lighting == "too_bright":
+        value = max(luminance, bright.low + LUMENS_MARGIN)
+    else:
+        value = min(max(luminance, normal.low + LUMENS_MARGIN), normal.high - LUMENS_MARGIN)
+    return round(max(0.0, min(1.0, value)), 3)
+
+
 class CameraUnavailable(RuntimeError):
     pass
 

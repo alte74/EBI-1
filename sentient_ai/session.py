@@ -26,9 +26,11 @@ from sentient_ai.memory import MemoryStore
 from sentient_ai.personality import Personality
 from sentient_ai.sensors import SensoryState, snapshot_labels
 from sentient_ai.simulation import canonical_payload, simulate_conversation
-from sentient_ai.vision_agent import VisionAgent, VisionReport
+from sentient_ai.vision_agent import VisionAgent, VisionReport, calibrated_lumens
 
 log = logging.getLogger(__name__)
+
+LUMENS_CHANGE = 0.02
 
 
 class BotSession:
@@ -50,6 +52,8 @@ class BotSession:
         self.force_poll = threading.Event()
         self.stop_stream = threading.Event()
         self.vision_drives_light = True
+        self.camera_lumens: float | None = None
+        self.lumens_seq = 0
         self.last_scene: dict | None = None
         self.memory = MemoryStore()
         self.vision = VisionAgent(self.client, self.receive_vision)
@@ -67,6 +71,16 @@ class BotSession:
 
     def receive_vision(self, report: VisionReport, jpeg: bytes | None) -> None:
         """Called from the Vision Agent thread on every snapshot."""
+        lumens = None
+        with self.lock:
+            if report.room_type != "unknown":
+                self.last_scene = report.as_dict()
+            judged = report.luminance is not None and report.lighting != "unknown"
+            if judged and self.vision_drives_light:
+                lumens = calibrated_lumens(
+                    report.luminance, report.lighting, self.engine.bands().vision
+                )
+                self._follow_camera_light(lumens)
         if jpeg is not None:
             self._remember(
                 "vision",
@@ -79,24 +93,29 @@ class BotSession:
                     "room_properties": report.room_properties,
                     "lighting": report.lighting,
                     "luminance": report.as_dict().get("luminance"),
+                    "lumens": lumens,
                 },
             )
-        with self.lock:
-            if report.room_type != "unknown":
-                self.last_scene = report.as_dict()
-            if report.luminance is None or not self.vision_drives_light:
-                return
-            if self.draft.light == self.engine.sensors.light:
-                self.draft.set_continuous("light", report.luminance)
-            self.engine.sensors.set_continuous("light", report.luminance)
-            crossed = self.engine.labels()["vision"] != self.engine.last_labels.get("vision")
-            if crossed and self.streaming:
-                self.force_poll.set()
+
+    def _follow_camera_light(self, lumens: float) -> None:
+        """Move Lumens (live and draft) when the latest picture's light differs from the last one."""
+        previous = self.camera_lumens
+        if previous is not None and abs(lumens - previous) < LUMENS_CHANGE:
+            return
+        self.camera_lumens = lumens
+        self.lumens_seq += 1
+        self.draft.set_continuous("light", lumens)
+        self.engine.sensors.set_continuous("light", lumens)
+        crossed = self.engine.labels()["vision"] != self.engine.last_labels.get("vision")
+        if crossed and self.streaming:
+            self.force_poll.set()
 
     def vision_state(self) -> dict:
         state = self.vision.snapshot()
         state["drive_light"] = self.vision_drives_light
         state["light_band"] = self.engine.labels()["vision"]
+        state["lumens"] = self.camera_lumens
+        state["lumens_seq"] = self.lumens_seq
         return state
 
     def set_vision(
@@ -111,6 +130,8 @@ class BotSession:
             self.vision.set_enabled(enabled)
         if drive_light is not None:
             with self.lock:
+                if drive_light and not self.vision_drives_light:
+                    self.camera_lumens = None
                 self.vision_drives_light = bool(drive_light)
         return self.public_state()
 
@@ -166,6 +187,7 @@ class BotSession:
             self.engine.emotion.set("Neutral", 0.30)
             self.engine.last_event = None
             self.draft = self.engine.sensors.copy()
+            self.camera_lumens = None
         return self.public_state()
 
     def reset_conversation(self) -> dict:
