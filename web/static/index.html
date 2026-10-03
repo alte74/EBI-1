@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@16..72,500;16..72,600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=6" />
+  <link rel="stylesheet" href="/static/styles.css?v=8" />
 </head>
 <body data-screen="main">
   <div class="shell">
@@ -16,6 +16,7 @@
       <button type="button" class="on" data-screen="main">Main</button>
       <button type="button" data-screen="edit">Edit Personality</button>
       <button type="button" data-screen="simulation">Simulation</button>
+      <button type="button" data-screen="memory">Memory</button>
     </nav>
     <div class="split-v" data-split="menu" title="Drag to resize menu · double-click to reset"></div>
 
@@ -51,6 +52,12 @@
               <div class="vision-actions">
                 <label class="check"><input type="checkbox" id="visionEnabled" checked /> Camera on</label>
                 <label class="check"><input type="checkbox" id="visionDrive" checked /> Camera drives Lumens</label>
+                <form id="visionIntervalForm" class="vision-interval" title="Seconds between automatic pictures. 0 = no automatic pictures.">
+                  <label for="visionInterval">Picture every</label>
+                  <input id="visionInterval" type="number" min="0" step="1" value="10" />
+                  <span>s</span>
+                  <button type="submit" id="visionIntervalBtn" class="ghost">Set</button>
+                </form>
               </div>
             </div>
           </section>
@@ -247,8 +254,48 @@
           </section>
         </section>
       </main>
+
+      <main class="mem-layout">
+        <section class="mem-col">
+          <div class="panel-head">
+            <h2>New memory</h2>
+          </div>
+          <p class="lede">Write something to remember. A picture is optional.</p>
+          <form id="memForm" class="mem-form">
+            <textarea id="memText" rows="6" placeholder="What should be remembered?"></textarea>
+            <label class="mem-file">
+              Picture
+              <input id="memImage" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
+            </label>
+            <img id="memPreview" class="mem-preview" alt="Selected picture" hidden />
+            <div class="row-actions">
+              <button type="submit" id="memAddBtn">Add memory</button>
+              <button type="button" id="memClearBtn" class="ghost">Clear</button>
+            </div>
+            <p id="memFormError" class="mem-error" hidden></p>
+          </form>
+        </section>
+        <section class="mem-col">
+          <div class="panel-head">
+            <h2>Memories</h2>
+            <span id="memCount" class="muted"></span>
+          </div>
+          <p class="lede">Every chat line and every Vision Agent picture is saved here. Newest first.</p>
+          <div class="mem-toolbar">
+            <div class="seg" id="memFilter">
+              <button type="button" class="on" data-value="all">All</button>
+              <button type="button" data-value="chat">Chat</button>
+              <button type="button" data-value="vision">Pictures</button>
+              <button type="button" data-value="note">Added</button>
+            </div>
+            <input id="memSearch" type="search" placeholder="Search memories" />
+          </div>
+          <div id="memList" class="mem-list log"></div>
+          <button type="button" id="memMoreBtn" class="ghost mem-more" hidden>Show older</button>
+        </section>
+      </main>
     </div>
   </div>
-  <script src="/static/app.js?v=5"></script>
+  <script src="/static/app.js?v=7"></script>
 </body>
 </html>

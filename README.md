@@ -121,6 +121,22 @@ Default mappings (you can change them on this screen):
 | Smell | none → Neutral | flowers → Joy | rotten eggs → Disgust |
 | Surface | soft → Joy, hard → Surprise, cold → Surprise, hot → Anger | | |
 
+## Vision Agent
+
+The web app runs two agents side by side:
+
+- **Cognitive Agent** — the chat bot above (`sentient_ai/session.py`).
+- **Vision Agent** — a background thread (`sentient_ai/vision_agent.py`) that uses the default camera. Every 10 seconds it takes a picture, measures the frame brightness, and asks Claude what kind of room it is, who is in front of the camera, the room's notable properties, and whether the light is too dim, normal, or too bright.
+
+Each report is sent to the Cognitive Agent, which:
+
+- feeds the measured brightness into the **Lumens** sensor (so a dark or blinding room can interrupt the bot mid-sentence, like any other sense), and
+- adds the scene to its system prompt, so it can talk about what it sees.
+
+The **Vision Agent** card at the top of the chat column shows the latest snapshot and report. **Camera on** pauses or resumes the agent (and releases the camera). Uncheck **Camera drives Lumens** to control the Lumens slider by hand again.
+
+Brightness is relative pixel brightness (0..1), not a calibrated lux/lumen reading, and webcams auto-adjust exposure, so Claude also judges the lighting from visual cues. Optional settings in `.env`: `VISION_AGENT=off`, `VISION_CAMERA_INDEX`, `VISION_INTERVAL_SECONDS`, `VISION_MODEL`. Each snapshot is one Claude vision call.
+
 ## Project layout
 
 ```

@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 
 from sentient_ai.claude_client import ClaudeClient
 from sentient_ai.config import (
+    MIN_VISION_INTERVAL,
     vision_camera_index,
     vision_enabled,
     vision_interval_seconds,
@@ -152,7 +153,7 @@ class VisionAgent:
     def __init__(
         self,
         client: ClaudeClient,
-        on_report: Callable[[VisionReport], None],
+        on_report: Callable[[VisionReport, bytes | None], None],
         *,
         camera_index: int | None = None,
         interval: float | None = None,
@@ -192,6 +193,15 @@ class VisionAgent:
         self.enabled = bool(on)
         self._wake.set()
 
+    def set_interval(self, seconds: float) -> None:
+        seconds = float(seconds)
+        if not (seconds == 0 or MIN_VISION_INTERVAL <= seconds < float("inf")):
+            raise ValueError(
+                f"Use 0 to stop automatic pictures, or at least {MIN_VISION_INTERVAL:g} seconds."
+            )
+        self.interval = seconds
+        self._wake.set()
+
     def latest(self) -> VisionReport | None:
         with self._lock:
             return self._latest
@@ -210,18 +220,32 @@ class VisionAgent:
             "report": report.as_dict() if report else None,
         }
 
+    def _sleep(self, seconds: float | None) -> None:
+        self._wake.wait(seconds)
+        self._wake.clear()
+
     def _run(self) -> None:
+        last_shot: float | None = None
         while not self._stop.is_set():
-            started = time.monotonic()
-            if self.enabled:
-                self.status = "watching"
-                self._tick()
-            else:
+            if not self.enabled:
                 self.status = "paused"
                 self.camera.release()
-            remaining = self.interval - (time.monotonic() - started)
-            self._wake.wait(max(0.5, remaining))
-            self._wake.clear()
+                last_shot = None
+                self._sleep(None)
+                continue
+            if self.interval <= 0:
+                self.status = "manual"
+                self.camera.release()
+                self._sleep(None)
+                continue
+            self.status = "watching"
+            if last_shot is not None:
+                remaining = self.interval - (time.monotonic() - last_shot)
+                if remaining > 0:
+                    self._sleep(remaining)
+                    continue
+            last_shot = time.monotonic()
+            self._tick()
 
     def _tick(self) -> None:
         self._seq += 1
@@ -253,6 +277,6 @@ class VisionAgent:
             if jpeg is not None:
                 self._frame = jpeg
         try:
-            self.on_report(report)
+            self.on_report(report, jpeg)
         except Exception:  # noqa: BLE001
             log.exception("Cognitive Agent failed to accept vision report")

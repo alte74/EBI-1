@@ -33,6 +33,11 @@ const SCREEN_META = {
     eyebrow: "Canonical happy path · Neutral environment",
     lede: "Insert a sensor value between two words, then apply EBI-1.",
   },
+  memory: {
+    title: "Memory",
+    eyebrow: "Everything heard, said and seen",
+    lede: "Draft values. Apply while the bot is mid-sentence to interrupt it.",
+  },
 };
 
 const sim = {
@@ -279,8 +284,12 @@ function renderVision(vision) {
   const tag = $("visionTag");
   $("visionEnabled").checked = vision.enabled;
   $("visionDrive").checked = vision.drive_light;
+  if (document.activeElement !== $("visionInterval")) $("visionInterval").value = vision.interval;
   if (!vision.enabled) {
     tag.textContent = "paused";
+    tag.className = "pill idle";
+  } else if (vision.interval <= 0) {
+    tag.textContent = "auto off";
     tag.className = "pill idle";
   } else if (report?.error) {
     tag.textContent = "error";
@@ -319,7 +328,7 @@ async function pollVision() {
   try {
     const state = await fetch("/api/state").then((r) => r.json());
     const v = state.vision;
-    const key = `${v.report?.seq}|${v.enabled}|${v.drive_light}|${v.status}`;
+    const key = `${v.report?.seq}|${v.enabled}|${v.drive_light}|${v.status}|${v.interval}`;
     if (key !== visionKey) {
       const fresh = v.report && v.report.seq !== visionSeq;
       visionKey = key;
@@ -340,12 +349,20 @@ async function setVision(body) {
     applyLive(state);
     renderVision(state.vision);
   } catch (err) {
+    visionKey = "";
     addSystem(String(err.message || err));
   }
 }
 
 $("visionEnabled").addEventListener("change", (ev) => setVision({ enabled: ev.target.checked }));
 $("visionDrive").addEventListener("change", (ev) => setVision({ drive_light: ev.target.checked }));
+$("visionIntervalForm").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const raw = $("visionInterval").value.trim();
+  if (raw === "") return;
+  $("visionInterval").blur();
+  setVision({ interval: Number(raw) });
+});
 
 function setSpeaking(on) {
   speaking = on;
@@ -406,17 +423,21 @@ function writeSlidersFrom(src) {
   setSeg("surface", draft.surface_touch);
 }
 
-async function postJSON(url, body) {
+async function sendJSON(method, url, body) {
   const res = await fetch(url, {
-    method: "POST",
+    method,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body || {}),
+    body: method === "DELETE" ? undefined : JSON.stringify(body || {}),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || res.statusText);
   }
   return res.json();
+}
+
+function postJSON(url, body) {
+  return sendJSON("POST", url, body);
 }
 
 async function refreshPreview() {
@@ -521,6 +542,9 @@ function showScreen(name) {
   $("screenLede").textContent = meta.lede;
   if (name === "simulation") {
     renderSimulation();
+  }
+  if (name === "memory") {
+    loadMemories().catch((err) => showMemError(err));
   }
   if (lastState) {
     paintTicks(lastState);
@@ -1029,6 +1053,303 @@ function initSimulation() {
   loadCanonical();
 }
 
+const MEMORY_POLL_MS = 3000;
+const MEMORY_PAGE = 100;
+const MEMORY_LABELS = { user: "You", bot: "Bot", interrupt: "Interrupt", vision: "Vision", note: "Added" };
+
+const mem = {
+  items: [],
+  version: null,
+  filter: "all",
+  query: "",
+  limit: MEMORY_PAGE,
+  editing: null,
+};
+
+function readDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error("Could not read the picture."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function showMemError(err) {
+  const el = $("memFormError");
+  el.textContent = err ? String(err.message || err) : "";
+  el.hidden = !err;
+}
+
+function memoryLabel(item) {
+  return MEMORY_LABELS[item.kind === "chat" ? item.role : item.kind] || item.kind;
+}
+
+function memoryImageUrl(item) {
+  return `/api/memory/${item.id}/image?v=${item.updated_at || item.created_at}`;
+}
+
+function memoryFacts(item) {
+  const meta = item.meta || {};
+  if (item.kind !== "vision") return "";
+  const parts = [];
+  if (meta.room_type && meta.room_type !== "unknown") parts.push(meta.room_type);
+  if (meta.people) parts.push(meta.people.length === 1 ? "1 person" : `${meta.people.length} people`);
+  if (meta.lighting && meta.lighting !== "unknown") parts.push(`lighting ${LIGHTING_NAMES[meta.lighting] || meta.lighting}`);
+  if (meta.luminance != null) parts.push(`luminance ${Number(meta.luminance).toFixed(2)}`);
+  return parts.join(" · ");
+}
+
+function filteredMemories() {
+  const q = mem.query.trim().toLowerCase();
+  return mem.items
+    .filter((item) => mem.filter === "all" || item.kind === mem.filter)
+    .filter((item) => !q || item.text.toLowerCase().includes(q))
+    .reverse();
+}
+
+function memoryButton(label, action, ghost) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = label;
+  btn.dataset.action = action;
+  if (ghost) btn.className = "ghost";
+  return btn;
+}
+
+function memoryEditor(item) {
+  const wrap = document.createElement("div");
+  wrap.className = "mem-editor";
+  const text = document.createElement("textarea");
+  text.className = "mem-edit-text";
+  text.rows = 4;
+  text.value = item.text;
+  const file = document.createElement("label");
+  file.className = "mem-edit-file";
+  file.textContent = item.image ? "Replace picture" : "Add picture";
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/jpeg,image/png,image/webp,image/gif";
+  input.className = "mem-edit-image";
+  file.appendChild(input);
+  wrap.append(text, file);
+  if (item.image) {
+    const remove = document.createElement("label");
+    remove.className = "check";
+    remove.innerHTML = '<input type="checkbox" class="mem-edit-remove" /> Remove picture';
+    wrap.appendChild(remove);
+  }
+  const actions = document.createElement("div");
+  actions.className = "mem-actions";
+  actions.append(memoryButton("Save", "save"), memoryButton("Cancel", "cancel", true));
+  const error = document.createElement("p");
+  error.className = "mem-error";
+  error.hidden = true;
+  wrap.append(actions, error);
+  return wrap;
+}
+
+function memoryCard(item) {
+  const card = document.createElement("article");
+  card.className = `mem-card ${item.kind} ${item.role || ""}`;
+  card.dataset.id = item.id;
+
+  const head = document.createElement("header");
+  const tag = document.createElement("span");
+  tag.className = "mem-tag";
+  tag.textContent = memoryLabel(item);
+  const when = document.createElement("time");
+  when.textContent = new Date(item.created_at * 1000).toLocaleString();
+  if (item.updated_at) when.textContent += " · edited";
+  head.append(tag, when);
+  card.appendChild(head);
+
+  if (item.image) {
+    const link = document.createElement("a");
+    link.href = memoryImageUrl(item);
+    link.target = "_blank";
+    link.rel = "noopener";
+    const img = document.createElement("img");
+    img.className = "mem-photo";
+    img.loading = "lazy";
+    img.src = link.href;
+    img.alt = item.text || "Memory picture";
+    link.appendChild(img);
+    card.appendChild(link);
+  }
+
+  if (mem.editing === item.id) {
+    card.appendChild(memoryEditor(item));
+    return card;
+  }
+  if (item.text) {
+    const body = document.createElement("p");
+    body.className = "mem-text";
+    body.textContent = item.text;
+    card.appendChild(body);
+  }
+  const facts = memoryFacts(item);
+  if (facts) {
+    const line = document.createElement("p");
+    line.className = "mem-facts";
+    line.textContent = facts;
+    card.appendChild(line);
+  }
+  const actions = document.createElement("div");
+  actions.className = "mem-actions";
+  actions.append(memoryButton("Edit", "edit", true), memoryButton("Delete", "delete", true));
+  card.appendChild(actions);
+  return card;
+}
+
+function renderMemories() {
+  const list = $("memList");
+  const shown = filteredMemories();
+  list.innerHTML = "";
+  shown.slice(0, mem.limit).forEach((item) => list.appendChild(memoryCard(item)));
+  if (!shown.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = mem.items.length ? "No memories match." : "No memories yet.";
+    list.appendChild(empty);
+  }
+  $("memMoreBtn").hidden = shown.length <= mem.limit;
+  const total = mem.items.length;
+  $("memCount").textContent = shown.length === total ? `${total} memories` : `${shown.length} of ${total}`;
+}
+
+async function loadMemories() {
+  const data = await fetch("/api/memory").then((r) => r.json());
+  if (data.version === mem.version) return;
+  mem.version = data.version;
+  mem.items = data.items;
+  if (!mem.editing) renderMemories();
+}
+
+async function pollMemories() {
+  if (screen === "memory") {
+    try {
+      await loadMemories();
+    } catch {
+      /* server restarting; try again next tick */
+    }
+  }
+  setTimeout(pollMemories, MEMORY_POLL_MS);
+}
+
+function replaceMemory(item) {
+  mem.items = mem.items.map((old) => (old.id === item.id ? item : old));
+}
+
+async function saveMemory(card, id) {
+  const error = card.querySelector(".mem-editor .mem-error");
+  const body = { text: card.querySelector(".mem-edit-text").value };
+  const file = card.querySelector(".mem-edit-image").files[0];
+  try {
+    if (file) body.image = await readDataUrl(file);
+    else if (card.querySelector(".mem-edit-remove")?.checked) body.remove_image = true;
+    replaceMemory(await sendJSON("PATCH", `/api/memory/${id}`, body));
+    mem.editing = null;
+    renderMemories();
+  } catch (err) {
+    error.textContent = String(err.message || err);
+    error.hidden = false;
+  }
+}
+
+async function deleteMemory(id) {
+  if (!confirm("Delete this memory? This cannot be undone.")) return;
+  try {
+    await sendJSON("DELETE", `/api/memory/${id}`);
+    mem.items = mem.items.filter((item) => item.id !== id);
+    if (mem.editing === id) mem.editing = null;
+    renderMemories();
+  } catch (err) {
+    alert(String(err.message || err));
+  }
+}
+
+function clearMemoryForm() {
+  $("memText").value = "";
+  $("memImage").value = "";
+  $("memPreview").hidden = true;
+  $("memPreview").removeAttribute("src");
+  showMemError(null);
+}
+
+function initMemory() {
+  $("memImage").addEventListener("change", async () => {
+    const file = $("memImage").files[0];
+    if (!file) {
+      $("memPreview").hidden = true;
+      return;
+    }
+    $("memPreview").src = await readDataUrl(file);
+    $("memPreview").hidden = false;
+  });
+
+  $("memClearBtn").addEventListener("click", clearMemoryForm);
+
+  $("memForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const file = $("memImage").files[0];
+    const body = { text: $("memText").value };
+    $("memAddBtn").disabled = true;
+    try {
+      if (file) body.image = await readDataUrl(file);
+      mem.items.push(await postJSON("/api/memory", body));
+      clearMemoryForm();
+      renderMemories();
+      $("memList").scrollTop = 0;
+    } catch (err) {
+      showMemError(err);
+    } finally {
+      $("memAddBtn").disabled = false;
+    }
+  });
+
+  document.querySelectorAll("#memFilter button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      mem.filter = btn.dataset.value;
+      mem.limit = MEMORY_PAGE;
+      setSeg("memFilter", mem.filter);
+      renderMemories();
+    });
+  });
+
+  $("memSearch").addEventListener("input", () => {
+    mem.query = $("memSearch").value;
+    mem.limit = MEMORY_PAGE;
+    renderMemories();
+  });
+
+  $("memMoreBtn").addEventListener("click", () => {
+    mem.limit += MEMORY_PAGE;
+    renderMemories();
+  });
+
+  $("memList").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-action]");
+    const card = btn?.closest(".mem-card");
+    if (!card) return;
+    const id = card.dataset.id;
+    if (btn.dataset.action === "edit") {
+      mem.editing = id;
+      renderMemories();
+      $("memList").querySelector(`[data-id="${id}"] .mem-edit-text`)?.focus();
+    } else if (btn.dataset.action === "cancel") {
+      mem.editing = null;
+      renderMemories();
+    } else if (btn.dataset.action === "save") {
+      saveMemory(card, id);
+    } else if (btn.dataset.action === "delete") {
+      deleteMemory(id);
+    }
+  });
+
+  pollMemories();
+}
+
 async function boot() {
   initSplitters();
   const state = await fetch("/api/state").then((r) => r.json());
@@ -1037,6 +1358,7 @@ async function boot() {
   connect();
   refreshPreview();
   initSimulation();
+  initMemory();
   pollVision();
 }
 

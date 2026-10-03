@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -21,10 +22,13 @@ from sentient_ai.interruption import (
     event_payload,
     monitor_interval_seconds,
 )
+from sentient_ai.memory import MemoryStore
 from sentient_ai.personality import Personality
 from sentient_ai.sensors import SensoryState, snapshot_labels
 from sentient_ai.simulation import canonical_payload, simulate_conversation
 from sentient_ai.vision_agent import VisionAgent, VisionReport
+
+log = logging.getLogger(__name__)
 
 
 class BotSession:
@@ -47,10 +51,36 @@ class BotSession:
         self.stop_stream = threading.Event()
         self.vision_drives_light = True
         self.last_scene: dict | None = None
+        self.memory = MemoryStore()
         self.vision = VisionAgent(self.client, self.receive_vision)
 
-    def receive_vision(self, report: VisionReport) -> None:
+    def _remember(self, kind: str, text: str, **fields) -> None:
+        if not (text or "").strip() and fields.get("image") is None:
+            return
+        try:
+            self.memory.add(kind, text, **fields)
+        except OSError:
+            log.exception("Could not save %s memory", kind)
+
+    def _remember_chat(self, role: str, text: str) -> None:
+        self._remember("chat", text, role=role)
+
+    def receive_vision(self, report: VisionReport, jpeg: bytes | None) -> None:
         """Called from the Vision Agent thread on every snapshot."""
+        if jpeg is not None:
+            self._remember(
+                "vision",
+                report.summary or report.error or "",
+                image=jpeg,
+                meta={
+                    "seq": report.seq,
+                    "room_type": report.room_type,
+                    "people": report.people,
+                    "room_properties": report.room_properties,
+                    "lighting": report.lighting,
+                    "luminance": report.as_dict().get("luminance"),
+                },
+            )
         with self.lock:
             if report.room_type != "unknown":
                 self.last_scene = report.as_dict()
@@ -69,7 +99,14 @@ class BotSession:
         state["light_band"] = self.engine.labels()["vision"]
         return state
 
-    def set_vision(self, enabled: bool | None = None, drive_light: bool | None = None) -> dict:
+    def set_vision(
+        self,
+        enabled: bool | None = None,
+        drive_light: bool | None = None,
+        interval: float | None = None,
+    ) -> dict:
+        if interval is not None:
+            self.vision.set_interval(interval)
         if enabled is not None:
             self.vision.set_enabled(enabled)
         if drive_light is not None:
@@ -113,6 +150,8 @@ class BotSession:
             else:
                 event = self.engine.poll()
             self.draft = self.engine.sensors.copy()
+        if event:
+            self._remember_chat("interrupt", event.spoken)
         return {
             "interrupt": event_payload(event),
             "state": self.public_state(),
@@ -281,6 +320,7 @@ class BotSession:
             yield {"type": "error", "message": "Already speaking."}
             return
 
+        self._remember_chat("user", text)
         yield {"type": "state", "state": self.public_state()}
 
         interrupt_at = threading.Event()
@@ -364,6 +404,8 @@ class BotSession:
                 "cut": cut + suffix,
             }
             yield {"type": "state", "state": self.public_state()}
+            self._remember_chat("bot", cut + suffix)
+            self._remember_chat("interrupt", event.spoken)
             with self.lock:
                 self.history.append({"role": "assistant", "content": cut + suffix})
                 self.history.append(
@@ -414,11 +456,13 @@ class BotSession:
                 else:
                     spoken2 = payload
                     break
+            self._remember_chat("bot", spoken2)
             with self.lock:
                 self.history.append(
                     {"role": "assistant", "content": event.spoken + " " + spoken2}
                 )
         else:
+            self._remember_chat("bot", spoken)
             with self.lock:
                 self.history.append({"role": "assistant", "content": spoken})
 

@@ -36,5 +36,10 @@ def vision_camera_index() -> int:
     return int(os.getenv("VISION_CAMERA_INDEX", "0"))
 
 
+MIN_VISION_INTERVAL = 2.0
+
+
 def vision_interval_seconds() -> float:
-    return max(2.0, float(os.getenv("VISION_INTERVAL_SECONDS", "10")))
+    """Seconds between automatic snapshots; 0 turns automatic capture off."""
+    value = float(os.getenv("VISION_INTERVAL_SECONDS", "10"))
+    return 0.0 if value <= 0 else max(MIN_VISION_INTERVAL, value)

@@ -12,3 +12,4 @@ dist/
 build/
 emotion_map.json
 thresholds.json
+memory/

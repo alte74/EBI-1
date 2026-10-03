@@ -74,6 +74,18 @@ class SimApplyPayload(BaseModel):
 class VisionPayload(BaseModel):
     enabled: bool | None = None
     drive_light: bool | None = None
+    interval: float | None = None
+
+
+class MemoryCreatePayload(BaseModel):
+    text: str = ""
+    image: str | None = None
+
+
+class MemoryUpdatePayload(BaseModel):
+    text: str | None = None
+    image: str | None = None
+    remove_image: bool = False
 
 
 def _sensor_dict(payload: SensorPayload | None) -> dict | None:
@@ -172,7 +184,10 @@ def simulation_apply(payload: SimApplyPayload) -> dict:
 
 @app.post("/api/vision")
 def vision_settings(payload: VisionPayload) -> dict:
-    return SESSION.set_vision(payload.enabled, payload.drive_light)
+    try:
+        return SESSION.set_vision(payload.enabled, payload.drive_light, payload.interval)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/vision/frame.jpg")
@@ -181,6 +196,51 @@ def vision_frame() -> Response:
     if jpeg is None:
         raise HTTPException(status_code=404, detail="No camera frame yet.")
     return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/memory")
+def list_memory() -> dict:
+    return SESSION.memory.snapshot()
+
+
+@app.post("/api/memory")
+def add_memory(payload: MemoryCreatePayload) -> dict:
+    try:
+        return SESSION.memory.add_note(payload.text, payload.image)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/memory/{memory_id}")
+def edit_memory(memory_id: str, payload: MemoryUpdatePayload) -> dict:
+    try:
+        return SESSION.memory.update(
+            memory_id,
+            text=payload.text,
+            image_data_url=payload.image,
+            remove_image=payload.remove_image,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Memory not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/memory/{memory_id}")
+def delete_memory(memory_id: str) -> dict:
+    try:
+        SESSION.memory.delete(memory_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Memory not found.") from exc
+    return {"ok": True}
+
+
+@app.get("/api/memory/{memory_id}/image")
+def memory_image(memory_id: str) -> FileResponse:
+    path = SESSION.memory.image_path(memory_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="This memory has no picture.")
+    return FileResponse(path)
 
 
 @app.websocket("/ws/chat")
