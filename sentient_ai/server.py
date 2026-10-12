@@ -6,12 +6,13 @@ import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from sentient_ai.session import BotSession
+from sentient_ai.speech import SpeechUnavailable
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 SESSION = BotSession()
@@ -20,6 +21,7 @@ SESSION = BotSession()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     SESSION.vision.start()
+    SESSION.speech.start()
     yield
     SESSION.vision.stop()
 
@@ -196,6 +198,18 @@ def vision_frame() -> Response:
     if jpeg is None:
         raise HTTPException(status_code=404, detail="No camera frame yet.")
     return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/speech/transcribe")
+async def transcribe_speech(request: Request) -> dict:
+    """Body: a 16-bit PCM WAV recording of the user speaking."""
+    audio = await request.body()
+    try:
+        return await asyncio.to_thread(SESSION.speech.transcribe, audio)
+    except SpeechUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/memory")

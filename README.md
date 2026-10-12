@@ -38,6 +38,7 @@ Personality **Individual_001** (simple model) shapes how sensitive the bot is, h
 
 - Python 3.10+
 - An [Anthropic API key](https://console.anthropic.com/)
+- A microphone, for talking to the bot (optional)
 - Windows 10 is fine (PowerShell)
 
 ## Setup and run
@@ -84,7 +85,7 @@ The left nav switches two screens that share the same chat and sensors.
 
 This is the experiment.
 
-1. **Chat** in the left column. Type a message and press **Send**. The bot streams its answer into the log. The header badge shows the current emotion and intensity; **idle** / **speaking** shows whether a reply is in flight.
+1. **Chat** in the left column. Type a message and press **Send**, or click **Speak** and talk (see [Speech input](#speech-input)). The bot streams its answer into the log. The header badge shows the current emotion and intensity; **idle** / **speaking** shows whether a reply is in flight.
 2. **Draft the environment** on the right while it talks (or before you send). Sliders and buttons are drafts until they are applied:
    - **Temperature** — cold / normal / hot (touch)
    - **Lumens** — too dark / normal / too bright (vision)
@@ -136,6 +137,16 @@ Each report is sent to the Cognitive Agent, which:
 The **Vision Agent** card at the top of the chat column shows the latest snapshot and report. **Camera on** pauses or resumes the agent (and releases the camera). Uncheck **Camera drives Lumens** to control the Lumens slider by hand again.
 
 Brightness is relative pixel brightness (0..1), not a calibrated lux/lumen reading, and webcams auto-adjust exposure, so Claude also judges the lighting from visual cues. Optional settings in `.env`: `VISION_AGENT=off`, `VISION_CAMERA_INDEX`, `VISION_INTERVAL_SECONDS`, `VISION_MODEL`. Each snapshot is one Claude vision call.
+
+## Speech input
+
+Click **Speak** next to **Send** and talk to the bot. The ring around the button follows your voice, so you can see it is hearing you. Listening stops by itself when you pause for about a second and a half, or when you click **Stop**. With **Auto-send speech** checked, your words are sent as the chat message; if the bot is still talking, they go out as soon as it finishes. Uncheck it to review and edit the text in the box before sending.
+
+Speech is turned into text on your own computer by [NVIDIA Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2), run on the CPU by [onnx-asr](https://github.com/istupakov/onnx-asr). There is no extra API key, and the audio never leaves the machine. Parakeet is one of the most accurate open speech models for English — it beats Whisper large-v3 on the [Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard) — adds punctuation and capitals, and returns nothing for silence instead of inventing words. A spoken sentence takes about half a second to transcribe on a laptop CPU.
+
+The first start downloads the model (about 2.5 GB) into the Hugging Face cache; after that it loads in a few seconds and works offline. **Speak** stays disabled until the model is ready (hover it to see why). Optional settings in `.env`: `SPEECH_TO_TEXT=off`, `SPEECH_MODEL=nemo-parakeet-tdt-0.6b-v3` (25 European languages instead of English only), `SPEECH_QUANTIZATION=int8` (a 650 MB download that uses less memory, slightly less accurate).
+
+Browsers only allow the microphone on `http://127.0.0.1`, `localhost`, or HTTPS. To use a different microphone, pick it in the browser's site settings for the page.
 
 ## Project layout
 

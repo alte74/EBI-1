@@ -324,6 +324,21 @@ h1 {
   margin-top: 6px;
 }
 .check { color: var(--muted); font-size: 13px; display: flex; gap: 6px; align-items: center; margin-right: auto; }
+.check[hidden] { display: none; }
+.composer-options { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-right: auto; }
+.composer-options .check { margin-right: 0; }
+.composer-buttons { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.mic { display: inline-flex; align-items: center; gap: 5px; transition: box-shadow 80ms linear; }
+.mic[hidden] { display: none; }
+.mic svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.mic svg rect { fill: currentColor; stroke: none; }
+.mic.listening {
+  background: var(--terra);
+  border-color: var(--terra);
+  color: #23180d;
+  box-shadow: 0 0 0 calc(var(--level, 0) * 7px) rgba(210, 101, 58, 0.35);
+}
+.mic.busy:disabled { cursor: progress; }
 button {
   background: var(--amber);
   color: #23180d;

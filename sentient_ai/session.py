@@ -26,6 +26,7 @@ from sentient_ai.memory import MemoryStore
 from sentient_ai.personality import Personality
 from sentient_ai.sensors import SensoryState, snapshot_labels
 from sentient_ai.simulation import canonical_payload, simulate_conversation
+from sentient_ai.speech import SpeechRecognizer
 from sentient_ai.vision_agent import VisionAgent, VisionReport, calibrated_lumens
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class BotSession:
         self.last_scene: dict | None = None
         self.memory = MemoryStore()
         self.vision = VisionAgent(self.client, self.receive_vision)
+        self.speech = SpeechRecognizer()
 
     def _remember(self, kind: str, text: str, **fields) -> None:
         if not (text or "").strip() and fields.get("image") is None:
@@ -149,6 +151,7 @@ class BotSession:
         snap["thresholds"] = self.personality.thresholds
         snap["primary_emotions"] = list(PRIMARY_EMOTIONS)
         snap["vision"] = self.vision_state()
+        snap["speech"] = self.speech.snapshot()
         return snap
 
     def set_draft(self, data: dict) -> dict:

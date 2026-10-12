@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@16..72,500;16..72,600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=8" />
+  <link rel="stylesheet" href="/static/styles.css?v=9" />
 </head>
 <body data-screen="main">
   <div class="shell">
@@ -65,12 +65,24 @@
           <form id="chatForm" class="composer">
             <textarea id="message" rows="1" placeholder="Talk to the bot. Change the environment while it answers."></textarea>
             <div class="composer-actions">
-              <label class="check">
-                <input type="checkbox" id="applyOnSend" checked />
-                Apply selectors on send
-              </label>
-              <button type="button" id="previewBtn" class="ghost">Preview replies</button>
-              <button type="submit" id="sendBtn">Send</button>
+              <div class="composer-options">
+                <label class="check">
+                  <input type="checkbox" id="applyOnSend" checked />
+                  Apply selectors on send
+                </label>
+                <label class="check" id="micAutoSendLabel" title="Send what you said as soon as you stop talking. Uncheck to review it in the box first." hidden>
+                  <input type="checkbox" id="micAutoSend" checked />
+                  Auto-send speech
+                </label>
+              </div>
+              <div class="composer-buttons">
+                <button type="button" id="previewBtn" class="ghost">Preview replies</button>
+                <button type="button" id="micBtn" class="ghost mic" disabled hidden>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>
+                  <span id="micLabel">Speak</span>
+                </button>
+                <button type="submit" id="sendBtn">Send</button>
+              </div>
             </div>
           </form>
         </section>
@@ -296,6 +308,6 @@
       </main>
     </div>
   </div>
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=9"></script>
 </body>
 </html>

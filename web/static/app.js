@@ -66,6 +66,7 @@ function connect() {
       setSpeaking(false);
       botBubble = null;
       refreshPreview();
+      sendSpeechAfterReply();
     }
   };
   socket.onclose = () => {
@@ -235,6 +236,7 @@ function renderState(state) {
   setSpeaking(Boolean(state.streaming));
   paintTicks(state);
   renderVision(state.vision);
+  renderSpeech(state.speech);
 }
 
 function applyLive(state) {
@@ -331,12 +333,13 @@ async function pollVision() {
   try {
     const state = await fetch("/api/state").then((r) => r.json());
     const v = state.vision;
-    const key = `${v.report?.seq}|${v.enabled}|${v.drive_light}|${v.status}|${v.interval}`;
+    const key = `${v.report?.seq}|${v.enabled}|${v.drive_light}|${v.status}|${v.interval}|${state.speech?.status}`;
     if (key !== visionKey) {
       const fresh = v.report && v.report.seq !== visionSeq;
       visionKey = key;
       applyLive(state);
       renderVision(v);
+      renderSpeech(state.speech);
       if (fresh) refreshPreview();
     }
   } catch {
@@ -1353,6 +1356,237 @@ function initMemory() {
   pollMemories();
 }
 
+const SPEECH_RATE = 16000;
+const SPEECH_TICK_MS = 50;
+const SPEECH_MIN_VOICE_MS = 250;
+const SPEECH_SILENCE_MS = 1500;
+const SPEECH_NO_VOICE_MS = 8000;
+const SPEECH_MAX_MS = 120000;
+const SPEECH_FLOOR_TICKS = 60;
+const MESSAGE_PLACEHOLDER = $("message").placeholder;
+
+const mic = {
+  status: "stopped",
+  error: null,
+  phase: "idle",
+  stream: null,
+  ctx: null,
+  recorder: null,
+  timer: 0,
+  startedAt: 0,
+  lastVoiceAt: 0,
+  voicedMs: 0,
+  levels: [],
+  sendAfterReply: false,
+};
+
+function micSupported() {
+  return Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+}
+
+function micTitle() {
+  if (mic.phase === "listening") return "Listening. Pause when you're done, or click to stop now.";
+  if (mic.phase === "transcribing") return "Turning your speech into text…";
+  if (!micSupported()) return "The browser only allows the microphone on http://127.0.0.1, localhost, or HTTPS.";
+  if (mic.status === "ready") return "Talk to the bot. Listening stops when you pause.";
+  if (mic.status === "error") return mic.error || "The speech model failed to load.";
+  return "Loading the speech model… (the first run downloads about 2.5 GB)";
+}
+
+function paintMic() {
+  const btn = $("micBtn");
+  btn.classList.toggle("listening", mic.phase === "listening");
+  btn.classList.toggle("busy", mic.phase === "transcribing");
+  btn.disabled = mic.phase === "idle" ? !(mic.status === "ready" && micSupported()) : mic.phase !== "listening";
+  btn.title = micTitle();
+  $("micLabel").textContent = { listening: "Stop", transcribing: "Hearing…" }[mic.phase] || "Speak";
+  if (mic.phase !== "listening") btn.style.removeProperty("--level");
+}
+
+function renderSpeech(speech) {
+  if (!speech) return;
+  mic.status = speech.status;
+  mic.error = speech.error;
+  $("micBtn").hidden = !speech.enabled;
+  $("micAutoSendLabel").hidden = !speech.enabled;
+  paintMic();
+}
+
+function micHint(text) {
+  $("message").placeholder = text || MESSAGE_PLACEHOLDER;
+}
+
+function micErrorText(err) {
+  if (err?.name === "NotAllowedError") {
+    return "Microphone access is blocked. Allow it for this page in the browser's site settings, then click Speak again.";
+  }
+  if (err?.name === "NotFoundError") return "No microphone found. Plug one in, or pick one in the browser's site settings.";
+  if (err?.name === "NotReadableError") return "The microphone is in use by another app. Close it there and try again.";
+  return `Microphone error: ${err?.message || err}`;
+}
+
+function releaseMic() {
+  clearInterval(mic.timer);
+  mic.stream?.getTracks().forEach((track) => track.stop());
+  mic.ctx?.close();
+  mic.stream = null;
+  mic.ctx = null;
+}
+
+async function openMic() {
+  mic.stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  mic.ctx = new AudioContext();
+  await mic.ctx.resume();
+  const analyser = mic.ctx.createAnalyser();
+  analyser.fftSize = 2048;
+  mic.ctx.createMediaStreamSource(mic.stream).connect(analyser);
+
+  const recorder = new MediaRecorder(mic.stream, { audioBitsPerSecond: 128000 });
+  const chunks = [];
+  const startedAt = performance.now();
+  recorder.ondataavailable = (ev) => {
+    if (ev.data.size) chunks.push(ev.data);
+  };
+  recorder.onstop = () => {
+    releaseMic();
+    transcribeRecording(new Blob(chunks, { type: recorder.mimeType }), performance.now() - startedAt);
+  };
+  recorder.start();
+
+  Object.assign(mic, { recorder, startedAt, lastVoiceAt: startedAt, voicedMs: 0, levels: [], phase: "listening" });
+  const frame = new Float32Array(analyser.fftSize);
+  mic.timer = setInterval(() => listenTick(analyser, frame), SPEECH_TICK_MS);
+}
+
+async function startListening() {
+  mic.phase = "opening";
+  paintMic();
+  try {
+    await openMic();
+    micHint("Listening… pause when you're done, or click Stop.");
+  } catch (err) {
+    releaseMic();
+    mic.phase = "idle";
+    addSystem(micErrorText(err));
+  }
+  paintMic();
+}
+
+function stopListening() {
+  if (mic.phase === "listening" && mic.recorder?.state === "recording") mic.recorder.stop();
+}
+
+function listenTick(analyser, frame) {
+  analyser.getFloatTimeDomainData(frame);
+  let sum = 0;
+  for (let i = 0; i < frame.length; i += 1) sum += frame[i] * frame[i];
+  const rms = Math.sqrt(sum / frame.length);
+
+  // Background level = quietest tenth of the last few seconds, so the cut-off adapts to the room.
+  mic.levels.push(rms);
+  if (mic.levels.length > SPEECH_FLOOR_TICKS) mic.levels.shift();
+  const floor = [...mic.levels].sort((a, b) => a - b)[Math.floor(mic.levels.length / 10)];
+  const now = performance.now();
+  if (rms > Math.max(0.008, floor * 3)) {
+    mic.voicedMs += SPEECH_TICK_MS;
+    mic.lastVoiceAt = now;
+  }
+  const db = 20 * Math.log10(rms + 1e-6);
+  $("micBtn").style.setProperty("--level", Math.min(1, Math.max(0, (db + 60) / 45)).toFixed(2));
+
+  const heard = mic.voicedMs >= SPEECH_MIN_VOICE_MS;
+  const elapsed = now - mic.startedAt;
+  if (
+    (heard && now - mic.lastVoiceAt >= SPEECH_SILENCE_MS) ||
+    (!heard && elapsed >= SPEECH_NO_VOICE_MS) ||
+    elapsed >= SPEECH_MAX_MS
+  ) {
+    stopListening();
+  }
+}
+
+function wavFile(samples, rate) {
+  const view = new DataView(new ArrayBuffer(44 + samples.length * 2));
+  const ascii = (offset, text) => [...text].forEach((ch, i) => view.setUint8(offset + i, ch.charCodeAt(0)));
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true);
+  view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  samples.forEach((x, i) => view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, x)) * 0x7fff, true));
+  return view.buffer;
+}
+
+async function speechWav(blob) {
+  // Decoding through a 16 kHz context resamples to the rate the speech model expects.
+  const decoded = await new OfflineAudioContext(1, 1, SPEECH_RATE).decodeAudioData(await blob.arrayBuffer());
+  const samples = new Float32Array(decoded.length);
+  for (let c = 0; c < decoded.numberOfChannels; c += 1) {
+    const data = decoded.getChannelData(c);
+    for (let i = 0; i < samples.length; i += 1) samples[i] += data[i] / decoded.numberOfChannels;
+  }
+  return wavFile(samples, SPEECH_RATE);
+}
+
+function useTranscript(text) {
+  const box = $("message");
+  box.value = box.value.trim() ? `${box.value.trimEnd()} ${text}` : text;
+  if (!$("micAutoSend").checked) box.focus();
+  else if (speaking) mic.sendAfterReply = true;
+  else $("chatForm").requestSubmit();
+}
+
+function sendSpeechAfterReply() {
+  if (!mic.sendAfterReply) return;
+  mic.sendAfterReply = false;
+  if ($("micAutoSend").checked && $("message").value.trim()) $("chatForm").requestSubmit();
+}
+
+async function transcribeRecording(blob, durationMs) {
+  mic.phase = "transcribing";
+  paintMic();
+  micHint("Turning your speech into text…");
+  let hint = "";
+  try {
+    if (durationMs < 300 || !blob.size) return;
+    const res = await fetch("/api/speech/transcribe", {
+      method: "POST",
+      headers: { "Content-Type": "audio/wav" },
+      body: await speechWav(blob),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    const { text } = await res.json();
+    if (text) useTranscript(text);
+    else hint = "Didn't catch anything. Click Speak and try again.";
+  } catch (err) {
+    addSystem(`Speech: ${err.message || err}`);
+  } finally {
+    mic.phase = "idle";
+    paintMic();
+    micHint(hint);
+  }
+}
+
+function initSpeech() {
+  $("micBtn").addEventListener("click", () => {
+    if (mic.phase === "idle") startListening();
+    else stopListening();
+  });
+}
+
 async function boot() {
   initSplitters();
   const state = await fetch("/api/state").then((r) => r.json());
@@ -1362,6 +1596,7 @@ async function boot() {
   refreshPreview();
   initSimulation();
   initMemory();
+  initSpeech();
   pollVision();
 }
 

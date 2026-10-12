@@ -4,3 +4,4 @@ anthropic
 python-dotenv
 opencv-python
 numpy
+onnx-asr[cpu,hub]

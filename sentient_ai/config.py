@@ -43,3 +43,16 @@ def vision_interval_seconds() -> float:
     """Seconds between automatic snapshots; 0 turns automatic capture off."""
     value = float(os.getenv("VISION_INTERVAL_SECONDS", "10"))
     return 0.0 if value <= 0 else max(MIN_VISION_INTERVAL, value)
+
+
+def speech_enabled() -> bool:
+    return os.getenv("SPEECH_TO_TEXT", "on").strip().lower() not in {"0", "off", "false", "no"}
+
+
+def speech_model() -> str:
+    return os.getenv("SPEECH_MODEL", "").strip() or "nemo-parakeet-tdt-0.6b-v2"
+
+
+def speech_quantization() -> str | None:
+    """None loads full precision; "int8" is a quarter of the download, slightly less accurate."""
+    return os.getenv("SPEECH_QUANTIZATION", "").strip() or None
