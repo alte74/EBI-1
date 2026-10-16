@@ -38,6 +38,7 @@ Personality **Individual_001** (simple model) shapes how sensitive the bot is, h
 
 - Python 3.10+
 - An [Anthropic API key](https://console.anthropic.com/)
+- A microphone, for talking to the bot (optional)
 - Windows 10 is fine (PowerShell)
 
 ## Setup and run
@@ -84,7 +85,7 @@ The left nav switches two screens that share the same chat and sensors.
 
 This is the experiment.
 
-1. **Chat** in the left column. Type a message and press **Send**. The bot streams its answer into the log. The header badge shows the current emotion and intensity; **idle** / **speaking** shows whether a reply is in flight.
+1. **Chat** in the left column. Type a message and press **Send**, or click **Speak** and talk (see [Speech input](#speech-input)). The bot speaks its answer (see [Bot voice](#bot-voice)) and writes it into the log. The header badge shows the current emotion and intensity; **idle** / **speaking** shows whether a reply is in flight.
 2. **Draft the environment** on the right while it talks (or before you send). Sliders and buttons are drafts until they are applied:
    - **Temperature** — cold / normal / hot (touch)
    - **Lumens** — too dark / normal / too bright (vision)
@@ -120,6 +121,49 @@ Default mappings (you can change them on this screen):
 | Humidity | dry → Sadness | Neutral | wet → Disgust |
 | Smell | none → Neutral | flowers → Joy | rotten eggs → Disgust |
 | Surface | soft → Joy, hard → Surprise, cold → Surprise, hot → Anger | | |
+
+## Vision Agent
+
+The web app runs two agents side by side:
+
+- **Cognitive Agent** — the chat bot above (`sentient_ai/session.py`).
+- **Vision Agent** — a background thread (`sentient_ai/vision_agent.py`) that uses the default camera. Every 10 seconds it takes a picture, measures the frame brightness, and asks Claude what kind of room it is, who is in front of the camera, the room's notable properties, and whether the light is too dim, normal, or too bright.
+
+Each report is sent to the Cognitive Agent, which:
+
+- feeds the measured brightness into the **Lumens** sensor (so a dark or blinding room can interrupt the bot mid-sentence, like any other sense), and
+- adds the scene to its system prompt, so it can talk about what it sees.
+
+The **Vision Agent** card at the top of the chat column shows the latest snapshot and report. **Camera on** pauses or resumes the agent (and releases the camera). Uncheck **Camera drives Lumens** to control the Lumens slider by hand again.
+
+Brightness is relative pixel brightness (0..1), not a calibrated lux/lumen reading, and webcams auto-adjust exposure, so Claude also judges the lighting from visual cues. Optional settings in `.env`: `VISION_AGENT=off`, `VISION_CAMERA_INDEX`, `VISION_INTERVAL_SECONDS`, `VISION_MODEL`. Each snapshot is one Claude vision call.
+
+## Speech input
+
+Click **Speak** next to **Send** and talk to the bot. The ring around the button follows your voice, so you can see it is hearing you. Listening stops by itself when you pause for about a second and a half, or when you click **Stop**. With **Auto-send speech** checked, your words are sent as the chat message; if the bot is still talking, they go out as soon as it finishes. Uncheck it to review and edit the text in the box before sending.
+
+Speech is turned into text on your own computer by [NVIDIA Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2), run on the CPU by [onnx-asr](https://github.com/istupakov/onnx-asr). There is no extra API key, and the audio never leaves the machine. Parakeet is one of the most accurate open speech models for English — it beats Whisper large-v3 on the [Open ASR Leaderboard](https://huggingface.co/spaces/hf-audio/open_asr_leaderboard) — adds punctuation and capitals, and returns nothing for silence instead of inventing words. A spoken sentence takes about half a second to transcribe on a laptop CPU.
+
+The first start downloads the model (about 2.5 GB) into the Hugging Face cache; after that it loads in a few seconds and works offline. **Speak** stays disabled until the model is ready (hover it to see why). Optional settings in `.env`: `SPEECH_TO_TEXT=off`, `SPEECH_MODEL=nemo-parakeet-tdt-0.6b-v3` (25 European languages instead of English only), `SPEECH_QUANTIZATION=int8` (a 650 MB download that uses less memory, slightly less accurate).
+
+Browsers only allow the microphone on `http://127.0.0.1`, `localhost`, or HTTPS. To use a different microphone, pick it in the browser's site settings for the page.
+
+## Bot voice
+
+The bot says its replies out loud. The text appears word by word as the voice reaches each word, so when the environment interrupts, the voice and the text stop at the same word. The bot then says the interrupt line ("Oh! is it getting hot in here…") and carries on in the new tone. Clicking **Apply environment** while the bot is idle makes it say the interrupt line too.
+
+The controls sit under the message box:
+
+- **Bot speaks** turns the voice on or off; unchecked, replies are typed out as before.
+- **Voice** picks one of eight voices. The default is **Michael** (American man, about 47). The others are George and Lewis (British men, about 52), Fenrir (American man, about 37), Puck (American man, about 30), Heart and Bella (American women, about 32 and 38), and Emma (British woman, about 31). The ages are estimates from an age-recognition model.
+- **Speed** from 0.6× to 1.6×. A change takes effect from the next sentence.
+- **Volume** of the voice, separate from your computer's volume.
+- **Emotion in voice** makes the bot's current emotion change how it talks: sad comes out slower and softer, angry faster and louder, joyful a little brighter.
+- **Test voice** plays a sample line with the current settings.
+
+The settings are saved in the browser. Clicking **Speak** silences the bot so the microphone doesn't hear it.
+
+The voice is [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), run on the CPU by [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx). Like speech input, it needs no API key and works offline. The first start downloads the model (about 340 MB) into `~/.cache/kokoro-onnx`. On a laptop CPU the bot starts talking about a second and a half after Claude starts writing, and it synthesizes each next sentence while the previous one plays, so there are no gaps. Optional settings in `.env`: `TEXT_TO_SPEECH=off`, `TTS_VOICE=bm_george` (the default voice for browsers that haven't picked one).
 
 ## Project layout
 

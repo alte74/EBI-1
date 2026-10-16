@@ -3,18 +3,32 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from sentient_ai.session import BotSession
+from sentient_ai.speech import SpeechUnavailable
+from sentient_ai.voice import VoiceUnavailable
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 SESSION = BotSession()
-app = FastAPI(title="Sentient AI")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    SESSION.vision.start()
+    SESSION.speech.start()
+    SESSION.voice.start()
+    yield
+    SESSION.vision.stop()
+
+
+app = FastAPI(title="Sentient AI", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
@@ -45,6 +59,46 @@ class ThresholdPayload(BaseModel):
     high: float
 
 
+class SimTagPayload(BaseModel):
+    gap: int
+    sensor: str
+    value: str
+
+
+class SimMessagePayload(BaseModel):
+    role: str
+    text: str
+    tag: SimTagPayload | None = None
+
+
+class SimApplyPayload(BaseModel):
+    messages: list[SimMessagePayload]
+
+
+class VisionPayload(BaseModel):
+    enabled: bool | None = None
+    drive_light: bool | None = None
+    interval: float | None = None
+
+
+class SayPayload(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    voice: str | None = None
+    speed: float = 1.0
+    emotion: bool = True
+
+
+class MemoryCreatePayload(BaseModel):
+    text: str = ""
+    image: str | None = None
+
+
+class MemoryUpdatePayload(BaseModel):
+    text: str | None = None
+    image: str | None = None
+    remove_image: bool = False
+
+
 def _sensor_dict(payload: SensorPayload | None) -> dict | None:
     if payload is None:
         return None
@@ -54,7 +108,10 @@ def _sensor_dict(payload: SensorPayload | None) -> dict | None:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
+    return FileResponse(
+        WEB_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/state")
@@ -121,6 +178,106 @@ def reset_thresholds() -> dict:
     return SESSION.reset_thresholds()
 
 
+@app.get("/api/simulation/canonical")
+def simulation_canonical() -> dict:
+    return SESSION.simulation_canonical()
+
+
+@app.post("/api/simulation/apply")
+def simulation_apply(payload: SimApplyPayload) -> dict:
+    try:
+        return SESSION.apply_simulation(
+            [item.model_dump() for item in payload.messages]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/vision")
+def vision_settings(payload: VisionPayload) -> dict:
+    try:
+        return SESSION.set_vision(payload.enabled, payload.drive_light, payload.interval)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/vision/frame.jpg")
+def vision_frame() -> Response:
+    jpeg = SESSION.vision.frame()
+    if jpeg is None:
+        raise HTTPException(status_code=404, detail="No camera frame yet.")
+    return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/speech/transcribe")
+async def transcribe_speech(request: Request) -> dict:
+    """Body: a 16-bit PCM WAV recording of the user speaking."""
+    audio = await request.body()
+    try:
+        return await asyncio.to_thread(SESSION.speech.transcribe, audio)
+    except SpeechUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/voice/say")
+async def say(payload: SayPayload) -> Response:
+    """A WAV of the bot saying one line in the chosen voice."""
+    try:
+        speech = await asyncio.to_thread(SESSION.say, payload.text, payload.model_dump())
+    except VoiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if speech is None:
+        raise HTTPException(status_code=400, detail="There is nothing to say in that text.")
+    return Response(speech.wav(), media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/memory")
+def list_memory() -> dict:
+    return SESSION.memory.snapshot()
+
+
+@app.post("/api/memory")
+def add_memory(payload: MemoryCreatePayload) -> dict:
+    try:
+        return SESSION.memory.add_note(payload.text, payload.image)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/memory/{memory_id}")
+def edit_memory(memory_id: str, payload: MemoryUpdatePayload) -> dict:
+    try:
+        return SESSION.memory.update(
+            memory_id,
+            text=payload.text,
+            image_data_url=payload.image,
+            remove_image=payload.remove_image,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Memory not found.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/memory/{memory_id}")
+def delete_memory(memory_id: str) -> dict:
+    try:
+        SESSION.memory.delete(memory_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Memory not found.") from exc
+    return {"ok": True}
+
+
+@app.get("/api/memory/{memory_id}/image")
+def memory_image(memory_id: str) -> FileResponse:
+    path = SESSION.memory.image_path(memory_id)
+    if path is None:
+        raise HTTPException(status_code=404, detail="This memory has no picture.")
+    return FileResponse(path)
+
+
 @app.websocket("/ws/chat")
 async def chat_socket(ws: WebSocket) -> None:
     await ws.accept()
@@ -134,7 +291,8 @@ async def chat_socket(ws: WebSocket) -> None:
 
             def run() -> None:
                 try:
-                    for event in SESSION.stream_chat(str(data.get("text") or "")):
+                    voice = data.get("voice") if isinstance(data.get("voice"), dict) else None
+                    for event in SESSION.stream_chat(str(data.get("text") or ""), voice):
                         events.put(event)
                 except Exception as exc:  # noqa: BLE001
                     events.put({"type": "error", "message": str(exc)})

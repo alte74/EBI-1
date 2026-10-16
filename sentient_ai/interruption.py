@@ -51,6 +51,9 @@ Emotion by Interruption -- sequence
 """
 
 
+SENSE_ORDER = ("touch", "vision", "hearing", "smell", "humidity", "surface")
+
+
 @dataclass
 class InterruptEvent:
     sense: str
@@ -67,6 +70,7 @@ class InterruptionEngine:
     sensors: SensoryState
     emotion: EmotionalState
     last_labels: dict[str, str] = field(default_factory=dict)
+    last_event: InterruptEvent | None = None
 
     def __post_init__(self) -> None:
         if not self.last_labels:
@@ -80,12 +84,13 @@ class InterruptionEngine:
     def labels(self, sensors: SensoryState | None = None) -> dict[str, str]:
         return snapshot_labels(sensors or self.sensors, self.bands())
 
-    def peek(self, sensors: SensoryState | None = None, *, stable: bool = False) -> InterruptEvent | None:
-        """Like poll, but does not change last_labels or emotion."""
+    def crossings(self, sensors: SensoryState | None = None) -> list[tuple[str, str, str, float]]:
+        """Every sense whose band changed since the last poll, strongest first."""
         state = sensors if sensors is not None else self.sensors
         current = snapshot_labels(state, self.bands())
         previous = self.last_labels
-        for sense in ("touch", "vision", "hearing", "smell", "humidity", "surface"):
+        found: list[tuple[str, str, str, float]] = []
+        for sense in SENSE_ORDER:
             if current.get(sense) == previous.get(sense, current.get(sense)):
                 continue
             new_band = current[sense]
@@ -93,27 +98,43 @@ class InterruptionEngine:
                 sense, new_band, self.personality.emotion_map
             )
             intensity = min(1.0, intensity * (0.7 + 0.6 * self.personality.emotional))
-            spoken = compose_interrupt(
-                sense, new_band, intensity, self.personality, stable=stable
-            )
-            return InterruptEvent(
-                sense=sense,
-                band=new_band,
-                value=str(getattr(state, _sensor_attr(sense), new_band)),
-                emotion=emotion_name,
-                intensity=intensity,
-                spoken=spoken,
-            )
-        return None
+            found.append((sense, new_band, emotion_name, intensity))
+        # Strongest sensation speaks first; SENSE_ORDER breaks ties deterministically.
+        found.sort(key=lambda item: (-item[3], SENSE_ORDER.index(item[0])))
+        return found
+
+    def peek(self, sensors: SensoryState | None = None, *, stable: bool = False) -> InterruptEvent | None:
+        """Like poll, but does not change last_labels or emotion."""
+        state = sensors if sensors is not None else self.sensors
+        found = self.crossings(state)
+        if not found:
+            return None
+        sense, new_band, emotion_name, intensity = found[0]
+        spoken = compose_interrupt(
+            sense, new_band, intensity, self.personality, stable=stable
+        )
+        return InterruptEvent(
+            sense=sense,
+            band=new_band,
+            value=str(getattr(state, _sensor_attr(sense), new_band)),
+            emotion=emotion_name,
+            intensity=intensity,
+            spoken=spoken,
+        )
 
     def poll(self) -> InterruptEvent | None:
         """Fire only when a band *changes* — Emotion by Interruption, not steady state."""
         event = self.peek(stable=False)
         current = self.labels()
-        self.last_labels = current
         if event:
+            # Only the sense that spoke is marked as seen. Anything else that crossed
+            # stays pending so it can interrupt on a later poll instead of vanishing.
+            self.last_labels[event.sense] = current[event.sense]
             self.emotion.set(event.emotion, event.intensity)
-        if self.sensors.surface_touch:
+            self.last_event = event
+        else:
+            self.last_labels = current
+        if self.sensors.surface_touch and (event is None or event.sense == "surface"):
             self.sensors.surface_touch = None
             self.last_labels["surface"] = "none"
         return event
@@ -142,11 +163,17 @@ class InterruptionEngine:
 
     def snapshot(self) -> dict:
         labels = self.labels()
+        trigger = self.last_event
         return {
             "emotion": {
                 "name": self.emotion.name,
                 "intensity": round(self.emotion.intensity, 3),
             },
+            "trigger": {"sense": trigger.sense, "band": trigger.band} if trigger else None,
+            "pending": [
+                {"sense": sense, "band": band, "emotion": emotion}
+                for sense, band, emotion, _ in self.crossings()
+            ],
             "sensors": self.sensors.as_dict(),
             "labels": labels,
             "last_labels": dict(self.last_labels),

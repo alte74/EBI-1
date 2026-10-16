@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@16..72,500;16..72,600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=10" />
 </head>
 <body data-screen="main">
   <div class="shell">
@@ -15,7 +15,10 @@
       <p class="menu-brand">Sentient AI</p>
       <button type="button" class="on" data-screen="main">Main</button>
       <button type="button" data-screen="edit">Edit Personality</button>
+      <button type="button" data-screen="simulation">Simulation</button>
+      <button type="button" data-screen="memory">Memory</button>
     </nav>
+    <div class="split-v" data-split="menu" title="Drag to resize menu · double-click to reset"></div>
 
     <div class="app">
       <header class="top">
@@ -32,20 +35,80 @@
 
       <main class="layout">
         <section class="chat-col">
+          <section class="vision-card" aria-label="Vision Agent">
+            <img id="visionFrame" class="vision-frame" alt="Latest camera snapshot" hidden />
+            <div class="vision-body">
+              <div class="panel-head">
+                <h2>Vision Agent</h2>
+                <span id="visionTag" class="pill idle">starting</span>
+              </div>
+              <p id="visionSummary" class="vision-summary">Waiting for the first snapshot…</p>
+              <dl class="vision-facts">
+                <dt>Room</dt><dd id="visionRoom">—</dd>
+                <dt>People</dt><dd id="visionPeople">—</dd>
+                <dt>Properties</dt><dd id="visionProps">—</dd>
+                <dt>Light</dt><dd id="visionLight">—</dd>
+              </dl>
+              <div class="vision-actions">
+                <label class="check"><input type="checkbox" id="visionEnabled" checked /> Camera on</label>
+                <label class="check"><input type="checkbox" id="visionDrive" checked /> Camera drives Lumens</label>
+                <form id="visionIntervalForm" class="vision-interval" title="Seconds between automatic pictures. 0 = no automatic pictures.">
+                  <label for="visionInterval">Picture every</label>
+                  <input id="visionInterval" type="number" min="0" step="1" value="10" />
+                  <span>s</span>
+                  <button type="submit" id="visionIntervalBtn" class="ghost">Set</button>
+                </form>
+              </div>
+            </div>
+          </section>
           <div id="log" class="log" aria-live="polite"></div>
           <form id="chatForm" class="composer">
             <textarea id="message" rows="1" placeholder="Talk to the bot. Change the environment while it answers."></textarea>
-            <div class="composer-actions">
-              <label class="check">
-                <input type="checkbox" id="applyOnSend" checked />
-                Apply selectors on send
+            <div id="voiceBar" class="voice-bar" hidden>
+              <label class="check" title="The bot says its replies out loud.">
+                <input type="checkbox" id="voiceOn" checked />
+                Bot speaks
               </label>
-              <button type="button" id="previewBtn" class="ghost">Preview replies</button>
-              <button type="submit" id="sendBtn">Send</button>
+              <select id="voiceName" aria-label="Voice" title="The bot's voice"></select>
+              <label class="voice-range" title="Speaking speed. Applies from the next sentence.">
+                Speed
+                <input id="voiceSpeed" type="range" min="0.6" max="1.6" step="0.05" value="1" />
+                <b id="voiceSpeedVal">1.00×</b>
+              </label>
+              <label class="voice-range" title="Volume of the bot's voice">
+                Volume
+                <input id="voiceVolume" type="range" min="0" max="1" step="0.05" value="0.9" />
+              </label>
+              <label class="check" title="Sad lines come out slower and softer, angry ones faster and louder.">
+                <input type="checkbox" id="voiceEmotion" checked />
+                Emotion in voice
+              </label>
+              <button type="button" id="voiceTest" class="ghost">Test voice</button>
+              <span id="voiceTag" class="pill idle">loading</span>
+            </div>
+            <div class="composer-actions">
+              <div class="composer-options">
+                <label class="check">
+                  <input type="checkbox" id="applyOnSend" checked />
+                  Apply selectors on send
+                </label>
+                <label class="check" id="micAutoSendLabel" title="Send what you said as soon as you stop talking. Uncheck to review it in the box first." hidden>
+                  <input type="checkbox" id="micAutoSend" checked />
+                  Auto-send speech
+                </label>
+              </div>
+              <div class="composer-buttons">
+                <button type="button" id="previewBtn" class="ghost">Preview replies</button>
+                <button type="button" id="micBtn" class="ghost mic" disabled hidden>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>
+                  <span id="micLabel">Speak</span>
+                </button>
+                <button type="submit" id="sendBtn">Send</button>
+              </div>
             </div>
           </form>
         </section>
-
+        <div class="split-v" data-split="chat" title="Drag to resize chat · double-click to reset"></div>
         <aside class="side">
           <section class="panel env-panel">
             <div class="panel-head">
@@ -146,7 +209,7 @@
               <button type="button" id="resetThreshBtn" class="ghost edit-only">Reset thresholds</button>
             </div>
           </section>
-
+          <div class="split-h" data-split="env" title="Drag to resize environment / next utterance · double-click to reset"></div>
           <section class="panel preview-panel">
             <div class="panel-head">
               <h2>Next utterance</h2>
@@ -157,6 +220,7 @@
                 <header>Before <small>currently applied</small></header>
                 <textarea id="beforeBox" readonly placeholder="Current environment utterance..."></textarea>
               </div>
+              <div class="split-v" data-split="preview" title="Drag to resize before / after · double-click to reset"></div>
               <div class="preview-box after">
                 <header>After <small>pending selectors</small></header>
                 <textarea id="afterBox" readonly placeholder="What would fire if you apply..."></textarea>
@@ -165,8 +229,107 @@
           </section>
         </aside>
       </main>
+
+      <main class="sim-layout">
+        <section class="sim-col">
+          <div class="panel-head">
+            <h2>Canonical conversation</h2>
+            <span class="muted">happy path · all Neutral</span>
+          </div>
+          <p class="lede">Original Neutral transcript. Environment stays at comfortable defaults.</p>
+          <div id="simCanonical" class="log"></div>
+        </section>
+        <div class="split-v" data-split="sim" title="Drag to resize canonical / simulation · double-click to reset"></div>
+        <section class="sim-col sim-play">
+          <div class="panel-head">
+            <h2>Simulation</h2>
+            <span class="muted">click a space between bot words</span>
+          </div>
+          <p class="lede">Insert <code>[temp = 011]</code> (or another sensor) in a gap. Apply EBI-1 to cut the line from a later random space and rewrite what remains.</p>
+          <div class="sim-toolbar">
+            <label>
+              Sensor
+              <select id="simSensor">
+                <option value="temp" selected>temp</option>
+                <option value="light">light</option>
+                <option value="volume">volume</option>
+                <option value="humidity">humidity</option>
+                <option value="smell">smell</option>
+                <option value="surface">surface</option>
+              </select>
+            </label>
+            <label>
+              Value
+              <input id="simValue" type="text" value="011" list="simValueHints" />
+              <datalist id="simValueHints">
+                <option value="011"></option>
+                <option value="050"></option>
+                <option value="092"></option>
+                <option value="cold"></option>
+                <option value="hot"></option>
+                <option value="flowers"></option>
+                <option value="rotten_eggs"></option>
+                <option value="soft"></option>
+                <option value="hard"></option>
+              </datalist>
+            </label>
+            <button type="button" id="simInsertBtn">Insert at selected gap</button>
+            <button type="button" id="simRandomBtn" class="ghost">Random gap</button>
+            <button type="button" id="simApplyBtn">Apply EBI-1</button>
+            <button type="button" id="simResetBtn" class="ghost">Reset</button>
+          </div>
+          <div id="simPlay" class="log"></div>
+          <section id="simAfter" class="sim-after" hidden>
+            <div class="panel-head">
+              <h2>After applying EBI-1</h2>
+              <span id="simAfterMeta" class="muted"></span>
+            </div>
+            <div id="simAfterLog" class="log"></div>
+          </section>
+        </section>
+      </main>
+
+      <main class="mem-layout">
+        <section class="mem-col">
+          <div class="panel-head">
+            <h2>New memory</h2>
+          </div>
+          <p class="lede">Write something to remember. A picture is optional.</p>
+          <form id="memForm" class="mem-form">
+            <textarea id="memText" rows="6" placeholder="What should be remembered?"></textarea>
+            <label class="mem-file">
+              Picture
+              <input id="memImage" type="file" accept="image/jpeg,image/png,image/webp,image/gif" />
+            </label>
+            <img id="memPreview" class="mem-preview" alt="Selected picture" hidden />
+            <div class="row-actions">
+              <button type="submit" id="memAddBtn">Add memory</button>
+              <button type="button" id="memClearBtn" class="ghost">Clear</button>
+            </div>
+            <p id="memFormError" class="mem-error" hidden></p>
+          </form>
+        </section>
+        <section class="mem-col">
+          <div class="panel-head">
+            <h2>Memories</h2>
+            <span id="memCount" class="muted"></span>
+          </div>
+          <p class="lede">Every chat line and every Vision Agent picture is saved here. Newest first.</p>
+          <div class="mem-toolbar">
+            <div class="seg" id="memFilter">
+              <button type="button" class="on" data-value="all">All</button>
+              <button type="button" data-value="chat">Chat</button>
+              <button type="button" data-value="vision">Pictures</button>
+              <button type="button" data-value="note">Added</button>
+            </div>
+            <input id="memSearch" type="search" placeholder="Search memories" />
+          </div>
+          <div id="memList" class="mem-list log"></div>
+          <button type="button" id="memMoreBtn" class="ghost mem-more" hidden>Show older</button>
+        </section>
+      </main>
     </div>
   </div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=10"></script>
 </body>
 </html>
