@@ -85,7 +85,7 @@ The left nav switches two screens that share the same chat and sensors.
 
 This is the experiment.
 
-1. **Chat** in the left column. Type a message and press **Send**, or click **Speak** and talk (see [Speech input](#speech-input)). The bot streams its answer into the log. The header badge shows the current emotion and intensity; **idle** / **speaking** shows whether a reply is in flight.
+1. **Chat** in the left column. Type a message and press **Send**, or click **Speak** and talk (see [Speech input](#speech-input)). The bot speaks its answer (see [Bot voice](#bot-voice)) and writes it into the log. The header badge shows the current emotion and intensity; **idle** / **speaking** shows whether a reply is in flight.
 2. **Draft the environment** on the right while it talks (or before you send). Sliders and buttons are drafts until they are applied:
    - **Temperature** — cold / normal / hot (touch)
    - **Lumens** — too dark / normal / too bright (vision)
@@ -147,6 +147,23 @@ Speech is turned into text on your own computer by [NVIDIA Parakeet TDT 0.6B v2]
 The first start downloads the model (about 2.5 GB) into the Hugging Face cache; after that it loads in a few seconds and works offline. **Speak** stays disabled until the model is ready (hover it to see why). Optional settings in `.env`: `SPEECH_TO_TEXT=off`, `SPEECH_MODEL=nemo-parakeet-tdt-0.6b-v3` (25 European languages instead of English only), `SPEECH_QUANTIZATION=int8` (a 650 MB download that uses less memory, slightly less accurate).
 
 Browsers only allow the microphone on `http://127.0.0.1`, `localhost`, or HTTPS. To use a different microphone, pick it in the browser's site settings for the page.
+
+## Bot voice
+
+The bot says its replies out loud. The text appears word by word as the voice reaches each word, so when the environment interrupts, the voice and the text stop at the same word. The bot then says the interrupt line ("Oh! is it getting hot in here…") and carries on in the new tone. Clicking **Apply environment** while the bot is idle makes it say the interrupt line too.
+
+The controls sit under the message box:
+
+- **Bot speaks** turns the voice on or off; unchecked, replies are typed out as before.
+- **Voice** picks one of eight voices. The default is **Michael** (American man, about 47). The others are George and Lewis (British men, about 52), Fenrir (American man, about 37), Puck (American man, about 30), Heart and Bella (American women, about 32 and 38), and Emma (British woman, about 31). The ages are estimates from an age-recognition model.
+- **Speed** from 0.6× to 1.6×. A change takes effect from the next sentence.
+- **Volume** of the voice, separate from your computer's volume.
+- **Emotion in voice** makes the bot's current emotion change how it talks: sad comes out slower and softer, angry faster and louder, joyful a little brighter.
+- **Test voice** plays a sample line with the current settings.
+
+The settings are saved in the browser. Clicking **Speak** silences the bot so the microphone doesn't hear it.
+
+The voice is [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M), run on the CPU by [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx). Like speech input, it needs no API key and works offline. The first start downloads the model (about 340 MB) into `~/.cache/kokoro-onnx`. On a laptop CPU the bot starts talking about a second and a half after Claude starts writing, and it synthesizes each next sentence while the previous one plays, so there are no gaps. Optional settings in `.env`: `TEXT_TO_SPEECH=off`, `TTS_VOICE=bm_george` (the default voice for browsers that haven't picked one).
 
 ## Project layout
 

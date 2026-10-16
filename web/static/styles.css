@@ -328,6 +328,32 @@ h1 {
 .composer-options { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-right: auto; }
 .composer-options .check { margin-right: 0; }
 .composer-buttons { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.voice-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.voice-bar[hidden] { display: none; }
+.voice-bar .check { font-size: 12px; margin-right: 0; }
+.voice-bar select {
+  background: #181410;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 4px;
+  font: inherit;
+  max-width: 100%;
+}
+.voice-bar select:disabled, .voice-bar input:disabled { opacity: 0.5; }
+.voice-range { display: flex; align-items: center; gap: 5px; }
+.voice-range input { width: 80px; accent-color: var(--amber); }
+.voice-range b { color: var(--ink); font-weight: 500; min-width: 38px; }
+.voice-bar button { padding: 3px 10px; font-size: 12px; }
+.voice-bar .pill { padding: 2px 8px; font-size: 11px; }
 .mic { display: inline-flex; align-items: center; gap: 5px; transition: box-shadow 80ms linear; }
 .mic[hidden] { display: none; }
 .mic svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }

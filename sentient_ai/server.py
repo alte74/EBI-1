@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from sentient_ai.session import BotSession
 from sentient_ai.speech import SpeechUnavailable
+from sentient_ai.voice import VoiceUnavailable
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web" / "static"
 SESSION = BotSession()
@@ -22,6 +23,7 @@ SESSION = BotSession()
 async def lifespan(_: FastAPI):
     SESSION.vision.start()
     SESSION.speech.start()
+    SESSION.voice.start()
     yield
     SESSION.vision.stop()
 
@@ -77,6 +79,13 @@ class VisionPayload(BaseModel):
     enabled: bool | None = None
     drive_light: bool | None = None
     interval: float | None = None
+
+
+class SayPayload(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    voice: str | None = None
+    speed: float = 1.0
+    emotion: bool = True
 
 
 class MemoryCreatePayload(BaseModel):
@@ -212,6 +221,18 @@ async def transcribe_speech(request: Request) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/api/voice/say")
+async def say(payload: SayPayload) -> Response:
+    """A WAV of the bot saying one line in the chosen voice."""
+    try:
+        speech = await asyncio.to_thread(SESSION.say, payload.text, payload.model_dump())
+    except VoiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if speech is None:
+        raise HTTPException(status_code=400, detail="There is nothing to say in that text.")
+    return Response(speech.wav(), media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/api/memory")
 def list_memory() -> dict:
     return SESSION.memory.snapshot()
@@ -270,7 +291,8 @@ async def chat_socket(ws: WebSocket) -> None:
 
             def run() -> None:
                 try:
-                    for event in SESSION.stream_chat(str(data.get("text") or "")):
+                    voice = data.get("voice") if isinstance(data.get("voice"), dict) else None
+                    for event in SESSION.stream_chat(str(data.get("text") or ""), voice):
                         events.put(event)
                 except Exception as exc:  # noqa: BLE001
                     events.put({"type": "error", "message": str(exc)})

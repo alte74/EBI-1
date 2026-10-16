@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 from sentient_ai.claude_client import ClaudeClient, build_system_prompt
 from sentient_ai.emotion import (
@@ -28,6 +29,14 @@ from sentient_ai.sensors import SensoryState, snapshot_labels
 from sentient_ai.simulation import canonical_payload, simulate_conversation
 from sentient_ai.speech import SpeechRecognizer
 from sentient_ai.vision_agent import VisionAgent, VisionReport, calibrated_lumens
+from sentient_ai.voice import (
+    SentenceSplitter,
+    Speech,
+    SynthJob,
+    VoiceSynth,
+    VoiceUnavailable,
+    reaction_pieces,
+)
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +68,7 @@ class BotSession:
         self.memory = MemoryStore()
         self.vision = VisionAgent(self.client, self.receive_vision)
         self.speech = SpeechRecognizer()
+        self.voice = VoiceSynth()
 
     def _remember(self, kind: str, text: str, **fields) -> None:
         if not (text or "").strip() and fields.get("image") is None:
@@ -152,6 +162,7 @@ class BotSession:
         snap["primary_emotions"] = list(PRIMARY_EMOTIONS)
         snap["vision"] = self.vision_state()
         snap["speech"] = self.speech.snapshot()
+        snap["voice"] = self.voice.snapshot()
         return snap
 
     def set_draft(self, data: dict) -> dict:
@@ -324,7 +335,8 @@ class BotSession:
             )
         return bundle
 
-    def stream_chat(self, user_text: str) -> Iterator[dict]:
+    def stream_chat(self, user_text: str, voice: dict | None = None) -> Iterator[dict]:
+        """Stream a reply. With voice settings the bot also speaks it, see _spoken_reply."""
         text = (user_text or "").strip()
         if not text:
             yield {"type": "error", "message": "Empty message."}
@@ -375,38 +387,13 @@ class BotSession:
 
         worker = threading.Thread(target=monitor, daemon=True)
         worker.start()
-        token_q: queue.Queue = queue.Queue()
-
-        def on_text(ch: str, allow_interrupt: bool = True) -> bool:
-            if self.stop_stream.is_set():
-                return False
-            if allow_interrupt and interrupt_at.is_set():
-                return False
-            token_q.put(("token", ch))
-            time.sleep(0.012)
-            return True
-
-        def producer() -> None:
-            try:
-                spoken = self.client.stream_reply(system, history, on_text)
-                token_q.put(("done", spoken))
-            except Exception as exc:  # noqa: BLE001
-                token_q.put(("error", str(exc)))
-
-        threading.Thread(target=producer, daemon=True).start()
-        spoken = ""
-        failed = None
-        while True:
-            kind, payload = token_q.get()
-            if kind == "token":
-                spoken += payload
-                yield {"type": "token", "text": payload}
-            elif kind == "error":
-                failed = payload
-                break
-            else:
-                spoken = payload
-                break
+        settings = self.voice.settings(voice)
+        spoken, failed = yield from self._reply(
+            system,
+            history,
+            settings,
+            halt=lambda: self.stop_stream.is_set() or interrupt_at.is_set(),
+        )
 
         stop.set()
         worker.join(timeout=0.4)
@@ -432,7 +419,7 @@ class BotSession:
             self._remember_chat("bot", cut + suffix)
             self._remember_chat("interrupt", event.spoken)
             with self.lock:
-                self.history.append({"role": "assistant", "content": cut + suffix})
+                self.history.append({"role": "assistant", "content": cut + suffix or "--"})
                 self.history.append(
                     {
                         "role": "user",
@@ -448,39 +435,22 @@ class BotSession:
                     self.personality, self.engine.emotion, self.engine, self.kb, self._scene()
                 )
                 resume_history = list(self.history)
-            resume_q: queue.Queue = queue.Queue()
-
-            def resume_on_text(ch: str) -> bool:
-                if self.stop_stream.is_set():
-                    return False
-                resume_q.put(("token", ch))
-                time.sleep(0.012)
-                return True
-
-            def resume_producer() -> None:
-                try:
-                    spoken2 = self.client.stream_reply(
-                        resume_system, resume_history, resume_on_text, max_tokens=500
-                    )
-                    resume_q.put(("done", spoken2))
-                except Exception as exc:  # noqa: BLE001
-                    resume_q.put(("error", str(exc)))
-
-            threading.Thread(target=resume_producer, daemon=True).start()
-            spoken2 = ""
-            while True:
-                kind, payload = resume_q.get()
-                if kind == "token":
-                    spoken2 += payload
-                    yield {"type": "token", "text": payload}
-                elif kind == "error":
-                    with self.lock:
-                        self.streaming = False
-                    yield {"type": "error", "message": payload}
-                    return
-                else:
-                    spoken2 = payload
-                    break
+            voice_free = time.monotonic()
+            if settings:
+                voice_free = yield from self._say_reaction(event.spoken, settings)
+            spoken2, failed = yield from self._reply(
+                resume_system,
+                resume_history,
+                settings,
+                halt=self.stop_stream.is_set,
+                max_tokens=500,
+                voice_free=voice_free,
+            )
+            if failed:
+                with self.lock:
+                    self.streaming = False
+                yield {"type": "error", "message": failed}
+                return
             self._remember_chat("bot", spoken2)
             with self.lock:
                 self.history.append(
@@ -489,12 +459,201 @@ class BotSession:
         else:
             self._remember_chat("bot", spoken)
             with self.lock:
-                self.history.append({"role": "assistant", "content": spoken})
+                self.history.append({"role": "assistant", "content": spoken or "--"})
 
         with self.lock:
             self.streaming = False
         yield {"type": "state", "state": self.public_state()}
         yield {"type": "done"}
+
+    def say(self, text: str, voice: dict | None) -> Speech | None:
+        """Speak one line outside a reply (voice test, interrupt while idle)."""
+        settings = self.voice.settings(voice)
+        if settings is None:
+            raise VoiceUnavailable(self.voice.unavailable())
+        return self.voice.synthesize(
+            text, settings["voice"], settings["speed"], self._voice_emotion(settings)
+        )
+
+    def _voice_emotion(self, settings: dict) -> tuple[str, float] | None:
+        if not settings["emotion"]:
+            return None
+        with self.lock:
+            return self.engine.emotion.name, self.engine.emotion.intensity
+
+    def _speak_piece(self, text: str, settings: dict, job: SynthJob | None = None) -> Speech | None:
+        try:
+            return self.voice.synthesize(
+                text, settings["voice"], settings["speed"], self._voice_emotion(settings), job
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("Could not speak %r", text)
+            return None
+
+    def _say_reaction(self, line: str, settings: dict) -> Iterator[dict]:
+        """Speak an interruption line; returns when the voice will have finished it."""
+        voice_free = time.monotonic()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            jobs = [pool.submit(self._speak_piece, piece, settings) for piece in reaction_pieces(line)]
+            for job in jobs:
+                speech = job.result()
+                if speech is not None:
+                    yield self._audio_event(speech)
+                    voice_free = max(voice_free, time.monotonic()) + speech.seconds
+        return voice_free
+
+    @staticmethod
+    def _audio_event(speech: Speech) -> dict:
+        return {"type": "audio", "audio": speech.pcm_base64(), "rate": speech.rate}
+
+    def _reply(
+        self,
+        system: str,
+        history: list[dict],
+        voice: dict | None,
+        *,
+        halt,
+        max_tokens: int = 600,
+        voice_free: float = 0.0,
+    ) -> Iterator[dict]:
+        """Stream one Claude reply as token events; returns (text, error).
+
+        halt() says when to stop mid-sentence. voice_free is when the voice finishes
+        what it is already saying.
+        """
+        if voice is None:
+            return (yield from self._typed_reply(system, history, halt, max_tokens))
+        return (yield from self._spoken_reply(system, history, voice, halt, max_tokens, voice_free))
+
+    def _typed_reply(self, system, history, halt, max_tokens) -> Iterator[dict]:
+        token_q: queue.Queue = queue.Queue()
+
+        def on_text(ch: str) -> bool:
+            if halt():
+                return False
+            token_q.put(("token", ch))
+            time.sleep(0.012)
+            return True
+
+        def producer() -> None:
+            try:
+                spoken = self.client.stream_reply(system, history, on_text, max_tokens=max_tokens)
+                token_q.put(("done", spoken))
+            except Exception as exc:  # noqa: BLE001
+                token_q.put(("error", str(exc)))
+
+        threading.Thread(target=producer, daemon=True).start()
+        while True:
+            kind, payload = token_q.get()
+            if kind == "token":
+                yield {"type": "token", "text": payload}
+            elif kind == "error":
+                return "", payload
+            else:
+                return payload, None
+
+    def _spoken_reply(self, system, history, voice, halt, max_tokens, voice_free) -> Iterator[dict]:
+        """Speak the reply as Claude writes it, showing each word as the voice reaches it.
+
+        One thread reads Claude and cuts the text into pieces, another synthesizes each
+        piece while the one before it plays. The text on screen is what has been said
+        out loud, so an interruption cuts the voice and the text at the same word.
+        """
+        pieces: queue.Queue = queue.Queue()
+        ready: queue.Queue = queue.Queue(maxsize=2)
+        finished = threading.Event()
+        splitter = SentenceSplitter()
+        shown: list[str] = []
+
+        def stopped() -> bool:
+            # Nobody can be cut off before saying a word; a closed page stops at once.
+            return halt() and (bool(shown) or self.stop_stream.is_set())
+
+        def on_text(ch: str) -> bool:
+            if finished.is_set() or (halt() and splitter.count):
+                return False
+            for piece in splitter.feed(ch):
+                pieces.put(piece)
+            return True
+
+        def reader() -> None:
+            try:
+                self.client.stream_reply(system, history, on_text, max_tokens=max_tokens)
+            except Exception as exc:  # noqa: BLE001
+                pieces.put(exc)
+            else:
+                tail = splitter.flush()
+                if tail:
+                    pieces.put(tail)
+            pieces.put(None)
+
+        def hand_over(item) -> None:
+            while not finished.is_set():
+                try:
+                    ready.put(item, timeout=0.1)
+                    return
+                except queue.Full:
+                    continue
+
+        jobs: list[SynthJob] = []
+
+        def synthesizer() -> None:
+            while not finished.is_set():
+                item = pieces.get()
+                if not isinstance(item, str):
+                    hand_over(item)
+                    return
+                job = SynthJob()
+                jobs.append(job)
+                if finished.is_set():
+                    return
+                hand_over((item, self._speak_piece(item, voice, job)))
+
+        def wait_until(moment: float) -> bool:
+            while not stopped():
+                left = moment - time.monotonic()
+                if left <= 0:
+                    return True
+                time.sleep(min(0.03, left))
+            return False
+
+        threading.Thread(target=reader, daemon=True).start()
+        threading.Thread(target=synthesizer, daemon=True).start()
+        voice_free = max(voice_free, time.monotonic())
+        try:
+            while True:
+                try:
+                    item = ready.get(timeout=0.05)
+                except queue.Empty:
+                    if stopped():
+                        return "".join(shown), None
+                    continue
+                if item is None:
+                    break
+                if isinstance(item, Exception):
+                    return "".join(shown), str(item)
+                text, speech = item
+                start = max(voice_free, time.monotonic())
+                marks = [(len(text), 0.0)]
+                if speech is not None:
+                    yield self._audio_event(speech)
+                    marks = speech.marks
+                    voice_free = start + speech.seconds
+                said = 0
+                for chars, at in marks + [(len(text), 0.0)]:
+                    if not wait_until(start + at):
+                        return "".join(shown), None
+                    if chars > said:
+                        shown.append(text[said:chars])
+                        yield {"type": "token", "text": text[said:chars]}
+                        said = chars
+            wait_until(voice_free)
+            return "".join(shown), None
+        finally:
+            # Stop synthesizing ahead so an interruption line gets the whole CPU.
+            finished.set()
+            for job in jobs:
+                job.cancel()
 
     def simulation_canonical(self) -> dict:
         return canonical_payload()

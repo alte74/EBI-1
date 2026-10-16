@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@16..72,500;16..72,600&family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/static/styles.css?v=9" />
+  <link rel="stylesheet" href="/static/styles.css?v=10" />
 </head>
 <body data-screen="main">
   <div class="shell">
@@ -64,6 +64,28 @@
           <div id="log" class="log" aria-live="polite"></div>
           <form id="chatForm" class="composer">
             <textarea id="message" rows="1" placeholder="Talk to the bot. Change the environment while it answers."></textarea>
+            <div id="voiceBar" class="voice-bar" hidden>
+              <label class="check" title="The bot says its replies out loud.">
+                <input type="checkbox" id="voiceOn" checked />
+                Bot speaks
+              </label>
+              <select id="voiceName" aria-label="Voice" title="The bot's voice"></select>
+              <label class="voice-range" title="Speaking speed. Applies from the next sentence.">
+                Speed
+                <input id="voiceSpeed" type="range" min="0.6" max="1.6" step="0.05" value="1" />
+                <b id="voiceSpeedVal">1.00×</b>
+              </label>
+              <label class="voice-range" title="Volume of the bot's voice">
+                Volume
+                <input id="voiceVolume" type="range" min="0" max="1" step="0.05" value="0.9" />
+              </label>
+              <label class="check" title="Sad lines come out slower and softer, angry ones faster and louder.">
+                <input type="checkbox" id="voiceEmotion" checked />
+                Emotion in voice
+              </label>
+              <button type="button" id="voiceTest" class="ghost">Test voice</button>
+              <span id="voiceTag" class="pill idle">loading</span>
+            </div>
             <div class="composer-actions">
               <div class="composer-options">
                 <label class="check">
@@ -308,6 +330,6 @@
       </main>
     </div>
   </div>
-  <script src="/static/app.js?v=9"></script>
+  <script src="/static/app.js?v=10"></script>
 </body>
 </html>

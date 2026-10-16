@@ -5,3 +5,4 @@ python-dotenv
 opencv-python
 numpy
 onnx-asr[cpu,hub]
+kokoro-onnx>=0.6.1

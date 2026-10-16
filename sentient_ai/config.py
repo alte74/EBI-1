@@ -56,3 +56,11 @@ def speech_model() -> str:
 def speech_quantization() -> str | None:
     """None loads full precision; "int8" is a quarter of the download, slightly less accurate."""
     return os.getenv("SPEECH_QUANTIZATION", "").strip() or None
+
+
+def voice_enabled() -> bool:
+    return os.getenv("TEXT_TO_SPEECH", "on").strip().lower() not in {"0", "off", "false", "no"}
+
+
+def voice_default() -> str:
+    return os.getenv("TTS_VOICE", "").strip() or "am_michael"

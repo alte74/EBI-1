@@ -53,7 +53,9 @@ function connect() {
   socket.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "token") appendBot(msg.text);
+    if (msg.type === "audio" && voice.settings.on) playPcm(msg.audio, msg.rate);
     if (msg.type === "interrupt") {
+      stopVoice();
       addInterrupt(msg.interrupt);
       botBubble = null;
     }
@@ -237,6 +239,7 @@ function renderState(state) {
   paintTicks(state);
   renderVision(state.vision);
   renderSpeech(state.speech);
+  renderVoice(state.voice);
 }
 
 function applyLive(state) {
@@ -333,13 +336,14 @@ async function pollVision() {
   try {
     const state = await fetch("/api/state").then((r) => r.json());
     const v = state.vision;
-    const key = `${v.report?.seq}|${v.enabled}|${v.drive_light}|${v.status}|${v.interval}|${state.speech?.status}`;
+    const key = `${v.report?.seq}|${v.enabled}|${v.drive_light}|${v.status}|${v.interval}|${state.speech?.status}|${state.voice?.status}`;
     if (key !== visionKey) {
       const fresh = v.report && v.report.seq !== visionSeq;
       visionKey = key;
       applyLive(state);
       renderVision(v);
       renderSpeech(state.speech);
+      renderVoice(state.voice);
       if (fresh) refreshPreview();
     }
   } catch {
@@ -470,7 +474,10 @@ $("chatForm").addEventListener("submit", async (ev) => {
   $("message").value = "";
   botBubble = null;
   setSpeaking(true);
-  socket.send(JSON.stringify({ type: "chat", text }));
+  stopVoice();
+  const spoken = voiceRequest();
+  if (spoken) audioOut();
+  socket.send(JSON.stringify({ type: "chat", text, voice: spoken }));
 });
 
 $("previewBtn").addEventListener("click", async () => {
@@ -494,7 +501,11 @@ $("applyBtn").addEventListener("click", async () => {
   const applied = await postJSON("/api/apply", sensorsPayload());
   renderState(applied.state);
   writeSlidersFrom(live);
-  if (applied.interrupt) addInterrupt(applied.interrupt);
+  if (applied.interrupt) {
+    addInterrupt(applied.interrupt);
+    stopVoice();
+    sayLine(applied.interrupt.spoken);
+  }
   refreshPreview();
 });
 
@@ -507,6 +518,7 @@ $("resetEnvBtn").addEventListener("click", async () => {
 
 $("resetChatBtn").addEventListener("click", async () => {
   await postJSON("/api/reset/conversation", {});
+  stopVoice();
   $("log").innerHTML = "";
 });
 
@@ -1461,6 +1473,7 @@ async function openMic() {
 }
 
 async function startListening() {
+  stopVoice();
   mic.phase = "opening";
   paintMic();
   try {
@@ -1587,6 +1600,176 @@ function initSpeech() {
   });
 }
 
+const VOICE_KEY = "sentient-voice";
+const VOICE_DEFAULTS = { on: true, voice: "", speed: 1, volume: 0.9, emotion: true };
+
+const voice = {
+  enabled: false,
+  status: "stopped",
+  error: null,
+  default: "",
+  voices: [],
+  settings: loadVoiceSettings(),
+  ctx: null,
+  gain: null,
+  sources: new Set(),
+  playEnd: 0,
+};
+
+function loadVoiceSettings() {
+  try {
+    return { ...VOICE_DEFAULTS, ...JSON.parse(localStorage.getItem(VOICE_KEY) || "{}") };
+  } catch {
+    return { ...VOICE_DEFAULTS };
+  }
+}
+
+function saveVoiceSettings() {
+  localStorage.setItem(VOICE_KEY, JSON.stringify(voice.settings));
+}
+
+function voiceReady() {
+  return voice.enabled && voice.status === "ready";
+}
+
+function voiceRequest(force) {
+  if (!voiceReady() || !(voice.settings.on || force)) return null;
+  const { speed, emotion } = voice.settings;
+  return { voice: voice.settings.voice || voice.default, speed, emotion };
+}
+
+function voiceTitle() {
+  if (voice.status === "ready") return "The bot's voice runs on this computer.";
+  if (voice.status === "error") return voice.error || "The voice model failed to load.";
+  if (voice.status === "downloading") return "Downloading the voice model (about 340 MB, first run only)…";
+  return "Loading the voice model…";
+}
+
+function renderVoice(state) {
+  if (!state) return;
+  Object.assign(voice, {
+    enabled: state.enabled,
+    status: state.status,
+    error: state.error,
+    default: state.default,
+    voices: state.voices,
+  });
+  $("voiceBar").hidden = !state.enabled;
+  const select = $("voiceName");
+  if (select.options.length !== state.voices.length) {
+    select.replaceChildren(
+      ...state.voices.map(({ id, label }) => new Option(id === state.default ? `${label} (default)` : label, id))
+    );
+  }
+  if (!state.voices.some(({ id }) => id === voice.settings.voice)) voice.settings.voice = state.default;
+  select.value = voice.settings.voice;
+  const ready = voiceReady();
+  ["voiceName", "voiceSpeed", "voiceEmotion", "voiceTest"].forEach((id) => {
+    $(id).disabled = !ready;
+  });
+  const tag = $("voiceTag");
+  tag.textContent = { ready: "voice ready", error: "voice error", downloading: "downloading voice" }[voice.status] || "loading voice";
+  tag.className = voice.status === "error" ? "pill live" : "pill idle";
+  tag.title = voiceTitle();
+}
+
+function paintVoiceControls() {
+  const s = voice.settings;
+  $("voiceOn").checked = s.on;
+  $("voiceSpeed").value = s.speed;
+  $("voiceSpeedVal").textContent = `${Number(s.speed).toFixed(2)}×`;
+  $("voiceVolume").value = s.volume;
+  $("voiceEmotion").checked = s.emotion;
+}
+
+function audioOut() {
+  if (!voice.ctx) {
+    voice.ctx = new AudioContext();
+    voice.gain = voice.ctx.createGain();
+    voice.gain.connect(voice.ctx.destination);
+  }
+  voice.gain.gain.value = voice.settings.volume;
+  // Browsers keep audio suspended until the page is clicked; every click calls this.
+  if (voice.ctx.state === "suspended") voice.ctx.resume();
+  return voice.ctx;
+}
+
+function playBuffer(buffer) {
+  const ctx = audioOut();
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(voice.gain);
+  const at = Math.max(ctx.currentTime + 0.03, voice.playEnd);
+  source.start(at);
+  voice.playEnd = at + buffer.duration;
+  voice.sources.add(source);
+  source.onended = () => voice.sources.delete(source);
+}
+
+function playPcm(base64, rate) {
+  const bytes = Uint8Array.from(atob(base64), (ch) => ch.charCodeAt(0));
+  const pcm = new Int16Array(bytes.buffer, 0, bytes.length >> 1);
+  const buffer = audioOut().createBuffer(1, pcm.length, rate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < pcm.length; i += 1) data[i] = pcm[i] / 32768;
+  playBuffer(buffer);
+}
+
+function stopVoice() {
+  voice.sources.forEach((source) => {
+    source.onended = null;
+    source.stop();
+  });
+  voice.sources.clear();
+  voice.playEnd = 0;
+}
+
+async function sayLine(text, force) {
+  const request = voiceRequest(force);
+  if (!request || !text) return;
+  audioOut();
+  try {
+    const res = await fetch("/api/voice/say", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, ...request }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+    playBuffer(await audioOut().decodeAudioData(await res.arrayBuffer()));
+  } catch (err) {
+    addSystem(`Voice: ${err.message || err}`);
+  }
+}
+
+function initVoice() {
+  paintVoiceControls();
+  document.addEventListener("pointerdown", () => voiceReady() && audioOut(), { capture: true });
+  const update = (patch) => {
+    Object.assign(voice.settings, patch);
+    saveVoiceSettings();
+    paintVoiceControls();
+  };
+  $("voiceOn").addEventListener("change", (ev) => {
+    update({ on: ev.target.checked });
+    if (!ev.target.checked) stopVoice();
+  });
+  $("voiceName").addEventListener("change", (ev) => update({ voice: ev.target.value }));
+  $("voiceSpeed").addEventListener("input", (ev) => update({ speed: Number(ev.target.value) }));
+  $("voiceVolume").addEventListener("input", (ev) => {
+    update({ volume: Number(ev.target.value) });
+    if (voice.gain) voice.gain.gain.value = voice.settings.volume;
+  });
+  $("voiceEmotion").addEventListener("change", (ev) => update({ emotion: ev.target.checked }));
+  $("voiceTest").addEventListener("click", () => {
+    const name = ($("voiceName").selectedOptions[0]?.textContent || "").split(" · ")[0];
+    stopVoice();
+    sayLine(`Hi, I'm ${name || "the bot"}. This is how I sound at this speed.`, true);
+  });
+}
+
 async function boot() {
   initSplitters();
   const state = await fetch("/api/state").then((r) => r.json());
@@ -1597,6 +1780,7 @@ async function boot() {
   initSimulation();
   initMemory();
   initSpeech();
+  initVoice();
   pollVision();
 }
 
